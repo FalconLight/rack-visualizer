@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Rack Visualizer</title>
-<meta name="description" content="Plan the space networking equipment takes up in racks: rack units, ports, cables, 2D and 3D views.">
+<meta name="description" content="Plan the space networking equipment takes up in racks: rack units, ports, power, cables, 2D and 3D views.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232563eb' stroke-width='2' stroke-linecap='round'%3E%3Crect x='5' y='3' width='14' height='18' rx='2'/%3E%3Cpath d='M8 8h8M8 12h8M8 16h8'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css?v=7">
+<link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
 
@@ -29,6 +29,10 @@
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V5M7 10l5-5 5 5M5 20h14"/></symbol>
     <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8z"/><path d="M14 3v5h5"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 16l5-5 4 4 3-3 5 5"/><circle cx="15.5" cy="9" r="1.5"/></symbol>
+    <symbol id="i-table" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M3.5 14.5h17M9.5 9.5v10"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+    <symbol id="i-wand" viewBox="0 0 24 24"><path d="M4 20L15 9M13 7l2-2 4 4-2 2z"/><path d="M8 3v3M6.5 4.5h3M19 14v3M17.5 15.5h3"/></symbol>
     <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
   </defs>
@@ -38,7 +42,10 @@
   <div class="brand"><svg class="ic logo"><use href="#i-rack"/></svg><span>Rack Visualizer</span></div>
 
   <div class="seg" id="viewSeg" role="group" aria-label="View">
-    <button data-view="2d" class="on" title="Front elevation">2D</button><button data-view="3d" title="3D view">3D</button>
+    <button data-view="2d" class="on" title="Elevation">2D</button><button data-view="3d" title="3D view">3D</button>
+  </div>
+  <div class="seg" id="faceSeg" role="group" aria-label="Face" title="Which side of the racks you look at (R)">
+    <button data-face="front" class="on">Front</button><button data-face="rear">Rear</button>
   </div>
 
   <span class="divider"></span>
@@ -46,15 +53,22 @@
   <div class="seg" id="modeSeg" role="group" aria-label="Tool">
     <button data-mode="select" class="on" title="Select and move (V)"><svg class="ic"><use href="#i-cursor"/></svg><span class="lbl">Select</span></button><button data-mode="connect" title="Draw cables, port to port (C)"><svg class="ic"><use href="#i-cable"/></svg><span class="lbl">Cable</span></button><button data-mode="measure" title="Measure distances (M)"><svg class="ic"><use href="#i-ruler"/></svg><span class="lbl">Measure</span></button>
   </div>
-  <label class="ctx" id="cableTypeWrap" title="Type for new cables" hidden>
+  <label class="ctx" id="cableTypeWrap" title="Preferred cable type. Power ports get a power cable automatically" hidden>
     <select id="cableType" aria-label="Cable type"></select>
   </label>
   <div class="seg" id="routeSeg" role="group" aria-label="Cable drawing" title="How cables are drawn in 2D">
     <button data-route="curve">Curved</button><button data-route="ortho">Diagram</button>
   </div>
+  <button class="ib" id="tidyBtn" title="Tidy: reorder cable lanes to remove crossings" aria-label="Tidy cables" hidden><svg class="ic"><use href="#i-wand"/></svg></button>
 
   <div class="spacer"></div>
 
+  <div class="search">
+    <svg class="ic"><use href="#i-search"/></svg>
+    <input id="searchIn" type="search" placeholder="Search devices, IPs, cables" aria-label="Search" autocomplete="off" spellcheck="false">
+    <kbd>/</kbd>
+    <div id="searchRes" class="menu" hidden></div>
+  </div>
   <label class="ctx" title="Units for lengths">
     <span class="lbl muted">Units</span>
     <select id="unitSel" aria-label="Units"><option value="cm">cm</option><option value="in">in</option><option value="mm">mm</option></select>
@@ -67,8 +81,11 @@
   <div class="menu-wrap">
     <button id="fileBtn" aria-haspopup="menu" aria-expanded="false" title="Export, import or start over"><svg class="ic"><use href="#i-menu"/></svg><span class="lbl">File</span></button>
     <div class="menu" id="fileMenu" role="menu" hidden>
-      <button role="menuitem" id="exportBtn"><svg class="ic"><use href="#i-download"/></svg>Export layout (.json)</button>
-      <button role="menuitem" id="importBtn"><svg class="ic"><use href="#i-upload"/></svg>Import layout…</button>
+      <button role="menuitem" id="drawingBtn" data-closes><svg class="ic"><use href="#i-image"/></svg>Export drawing (PDF, SVG, PNG)…</button>
+      <button role="menuitem" id="csvBtn" data-closes><svg class="ic"><use href="#i-table"/></svg>Export bill of materials (.csv)</button>
+      <hr>
+      <button role="menuitem" id="exportBtn" data-closes><svg class="ic"><use href="#i-download"/></svg>Save layout (.json)</button>
+      <button role="menuitem" id="importBtn" data-closes><svg class="ic"><use href="#i-upload"/></svg>Open layout…</button>
       <hr>
       <button role="menuitem" id="newBtn" class="danger"><svg class="ic"><use href="#i-file"/></svg><span>New empty layout</span></button>
     </div>
@@ -106,7 +123,7 @@
   </aside>
 
   <div id="stage" data-mode="select">
-    <svg id="svg" xmlns="http://www.w3.org/2000/svg" aria-label="Rack elevation"></svg>
+    <svg id="svg" class="scene" xmlns="http://www.w3.org/2000/svg" aria-label="Rack elevation"></svg>
     <div id="three" hidden></div>
     <div id="legend" class="float" hidden></div>
     <div id="empty" class="empty-state" hidden>
@@ -135,6 +152,10 @@
       <summary><h3>Cables</h3><span class="count" id="cableCount"></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
       <div class="sec-body"><div id="cableList" class="list"></div></div>
     </details>
+    <details class="sec" data-key="power">
+      <summary><h3>Power &amp; weight</h3><span class="count warn-count" id="powerCount"></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+      <div class="sec-body"><div id="powerPanel"></div></div>
+    </details>
     <details class="sec" data-key="style">
       <summary><h3>Colors &amp; cable types</h3><svg class="ic chev"><use href="#i-chev"/></svg></summary>
       <div class="sec-body"><div id="styleEditor"></div></div>
@@ -162,11 +183,15 @@
   </div>
   <dl class="keys">
     <dt><kbd>V</kbd></dt><dd>Select and move equipment</dd>
-    <dt><kbd>C</kbd></dt><dd>Cable tool: click a port, then a port on another device</dd>
+    <dt><kbd>C</kbd></dt><dd>Cable tool: click a port, then a port on another device. Power outlets connect to power inlets.</dd>
     <dt><kbd>M</kbd></dt><dd>Measure: drag anywhere</dd>
+    <dt><kbd>R</kbd></dt><dd>Switch between the front and rear view (power inlets are at the rear)</dd>
     <dt>Drag a plug</dt><dd>Move a cable end to another port (Select tool)</dd>
-    <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move the selected device to the next free slot</dd>
+    <dt><kbd>Shift</kbd> click / drag</dt><dd>Select several devices, or drag a box on empty space</dd>
+    <dt><kbd>Ctrl</kbd> <kbd>C</kbd> <kbd>V</kbd> <kbd>D</kbd></dt><dd>Copy, paste into the selected rack, duplicate</dd>
+    <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move the selection to the next free slot</dd>
     <dt><kbd>Del</kbd></dt><dd>Delete the selection</dd>
+    <dt><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd></dt><dd>Search devices, hostnames, IPs and cable labels</dd>
     <dt><kbd>Esc</kbd></dt><dd>Cancel / clear selection</dd>
     <dt><kbd>F</kbd></dt><dd>Fit everything in view</dd>
     <dt><kbd>+</kbd> <kbd>−</kbd></dt><dd>Zoom in / out</dd>
@@ -174,12 +199,59 @@
     <dt>Drag empty space</dt><dd>Pan (or right / middle mouse button)</dd>
     <dt>Scroll · pinch</dt><dd>Zoom</dd>
   </dl>
-  <p class="hint">Your layout saves automatically in this browser. Use File → Export to keep a copy or move it to another device.</p>
+  <p class="hint">In Diagram mode cables run through the nearest cable manager and the rack's side channel; the wand button reorders lanes to remove crossings. Your layout saves automatically in this browser. Use File → Save layout to keep a copy or move it to another device.</p>
+</dialog>
+
+<dialog id="exportDlg" aria-labelledby="exportTitle">
+  <form id="exportForm">
+    <div class="dlg-head">
+      <h2 id="exportTitle">Export drawing</h2>
+      <button class="ib" type="button" data-close aria-label="Close"><svg class="ic"><use href="#i-close"/></svg></button>
+    </div>
+    <div class="stack">
+      <div class="grid2">
+        <label>Format<select name="format">
+          <option value="pdf">PDF with layers</option>
+          <option value="svg">SVG with layers</option>
+          <option value="png">PNG image</option>
+        </select></label>
+        <label>View<select name="face">
+          <option value="front">Front elevation</option>
+          <option value="rear">Rear elevation</option>
+          <option value="both">Front and rear</option>
+        </select></label>
+        <label data-for="vector">Scale<select name="scale">
+          <option value="5">1:5</option><option value="10" selected>1:10</option><option value="20">1:20</option>
+          <option value="25">1:25</option><option value="50">1:50</option>
+        </select></label>
+        <label data-for="png">Image width<select name="png">
+          <option value="1600">1600 px</option><option value="3200" selected>3200 px</option><option value="6400">6400 px</option>
+        </select></label>
+      </div>
+      <fieldset class="checks">
+        <legend>Include</legend>
+        <label class="check"><input type="checkbox" name="ruler" checked> Height ruler</label>
+        <label class="check"><input type="checkbox" name="cables" checked> Cables</label>
+        <label class="check"><input type="checkbox" name="labels"> Cable labels</label>
+        <label class="check"><input type="checkbox" name="titled" checked> Title and date</label>
+      </fieldset>
+      <p class="hint">PDF and SVG are drawn to scale in millimetres, and keep each part on its own layer (racks, rack units, devices, data ports, power ports, one layer per cable type, labels), so CAD programs such as AutoCAD (PDFIMPORT), Illustrator or Inkscape can switch them on and off.</p>
+    </div>
+    <div class="row end dlg-foot">
+      <button type="button" data-close>Cancel</button>
+      <button type="submit" class="primary">Export</button>
+    </div>
+  </form>
 </dialog>
 
 <datalist id="portCounts"><option value="4"><option value="8"><option value="12"><option value="16"><option value="24"><option value="48"></datalist>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
-<script src="app.js?v=7"></script>
+<script src="js/model.js?v=8"></script>
+<script src="js/routing.js?v=8"></script>
+<script src="js/draw2d.js?v=8"></script>
+<script src="js/view3d.js?v=8"></script>
+<script src="js/export.js?v=8"></script>
+<script src="js/ui.js?v=8"></script>
 </body>
 </html>

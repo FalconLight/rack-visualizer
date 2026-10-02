@@ -1,0 +1,1310 @@
+'use strict';
+/* =====================================================================
+   Rack Visualizer · interface
+   Selection and editing, pointer interaction, side panels, search,
+   toolbar, keyboard shortcuts and the render loop.
+   ===================================================================== */
+
+const propsEl = $('#props'), rackListEl = $('#rackList'), cableListEl = $('#cableList'), powerEl = $('#powerPanel');
+
+let toastTimer;
+function toast(msg) {
+  toastEl.textContent = msg; toastEl.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (toastEl.hidden = true), 2800);
+}
+
+/* ---------- colors ---------- */
+const devColor = d => d.color || cssVar('--k-' + T_(d).cat);
+function applyCatColors() {
+  const st = document.documentElement.style;
+  for (const [k] of CATS) {
+    const v = doc.settings.catColors?.[k];
+    if (v) st.setProperty('--k-' + k, v); else st.removeProperty('--k-' + k);
+  }
+}
+
+/* ================= selection & actions ================= */
+const isSel = (kind, id) => ui.sel?.kind === kind && ui.sel.id === id;
+function select(kind, id) {
+  ui.sel = kind ? { kind, id } : null;
+  ui.multi.clear();
+  if (kind === 'rack') ui.lastRack = id;
+  if (kind === 'device') ui.lastRack = findDev(id)?.rack.id;
+  renderAll();
+}
+const selectedDevIds = () => (ui.multi.size ? [...ui.multi] : ui.sel?.kind === 'device' ? [ui.sel.id] : []);
+function setMulti(ids) {
+  ui.multi = new Set(ids);
+  if (ui.multi.size === 1) { ui.sel = { kind: 'device', id: ids[0] }; ui.multi.clear(); }
+  else ui.sel = ui.multi.size ? { kind: 'device', id: [...ui.multi][0] } : null;
+}
+function toggleMulti(id) {
+  const cur = new Set(selectedDevIds());
+  if (cur.has(id)) cur.delete(id); else cur.add(id);
+  setMulti([...cur]);
+  if (ui.sel) ui.lastRack = findDev(ui.sel.id)?.rack.id;
+  renderAll();
+}
+function targetRack() {
+  return doc.racks.find(r => r.id === ui.lastRack) || doc.racks[0] || null;
+}
+function addDevice(type, rack = targetRack(), u = null, fields = {}) {
+  if (!rack) return toast('Add a rack first');
+  const d = makeDev(type, fields);
+  if (isZeroU(d)) {
+    const pos = freeZeroU(rack, d);
+    if (!pos) return toast(`No free side space in ${rack.name} for a vertical PDU`);
+    Object.assign(d, pos);
+  } else if (u == null) {
+    d.u = freeSlot(rack, d);
+    if (!d.u) return toast(`No free ${d.h}U space in ${rack.name}`);
+  } else {
+    d.u = u;
+    const err = conflict(rack, d);
+    if (err) return toast(err);
+  }
+  ui.sel = { kind: 'device', id: d.id }; ui.multi.clear(); ui.lastRack = rack.id;
+  mutate(() => rack.devices.push(d));
+  if (ui.view === '2d' && d.mount !== ui.face) toast(`Added at the ${d.mount}. Press R to see the ${d.mount} view`);
+}
+/* apply drag targets: [{ id, rackId, patch }] */
+function applyMoves(targets) {
+  const changes = targets.filter(t => {
+    const f = findDev(t.id);
+    return f && (f.rack.id !== t.rackId || Object.entries(t.patch).some(([k, v]) => f.dev[k] !== v));
+  });
+  if (!changes.length) return;
+  mutate(() => {
+    for (const t of changes) {
+      const f = findDev(t.id), to = doc.racks.find(r => r.id === t.rackId);
+      Object.assign(f.dev, t.patch);
+      if (f.rack !== to) { f.rack.devices.splice(f.rack.devices.indexOf(f.dev), 1); to.devices.push(f.dev); }
+    }
+  });
+  ui.lastRack = targets[0].rackId;
+}
+function moveToRack(id, rackId) {
+  const f = findDev(id), to = doc.racks.find(r => r.id === rackId);
+  if (!f || !to) return;
+  if (isZeroU(f.dev)) {
+    const pos = freeZeroU(to, f.dev);
+    if (!pos) return toast(`No free side space in ${to.name}`);
+    return applyMoves([{ id, rackId, patch: pos }]);
+  }
+  const u = nearestFree(to, f.dev, clamp(f.dev.u, 1, to.units));
+  if (!u) return toast(`No free ${f.dev.h}U space in ${to.name}`);
+  applyMoves([{ id, rackId, patch: { u } }]);
+}
+function connectClick(id, port = '') {
+  const dv = findDev(id).dev;
+  const total = nPorts(dv) + nUplinks(dv) + nInlets(dv) + nOutlets(dv);
+  if (!port) return toast(total ? 'Click on a port' : `“${dv.name}” has no ports. Set a port count first`);
+  if (portUse()[id]?.[port]) return toast(`${dv.name} ${portName(dv, port)} is already in use`);
+  if (!ui.pending) { ui.pending = id; ui.pendingPort = port; return renderAll(); }
+  if (ui.pending === id) {
+    if (ui.pendingPort === port) { ui.pending = null; return renderAll(); }
+    return toast('Pick a port on a different device');
+  }
+  const a = findDev(ui.pending).dev, ka = ui.pendingPort;
+  if (portKind(ka) !== portKind(port)) return toast('Data ports connect to data ports, power outlets to power inlets');
+  if (portKind(ka) === 'power' && ka[0] === port[0]) return toast(port[0] === 'o' ? 'Connect an outlet to a power inlet' : 'Connect a power inlet to an outlet');
+  const type = pickCableType(ui.cableType, a, ka, dv, port);
+  const c = { id: uid(), type, a: ui.pending, b: id, pa: ka, pb: port, label: '' };
+  if (portKind(ka) === 'power' && ka[0] === 'i') Object.assign(c, { a: id, b: ui.pending, pa: port, pb: ka });   // power runs outlet → inlet
+  ui.pending = null;
+  ui.sel = { kind: 'cable', id: c.id }; ui.multi.clear();
+  mutate(() => doc.cables.push(c));
+  const warn = cableCheck(c);
+  if (warn) toast('⚠ ' + warn);
+  else if (type !== ui.cableType) toast(`Used a ${ctype(type).name} cable for these ports`);
+}
+/* move devices up / down to the next position where all of them fit */
+function shiftDevs(ids, dir) {
+  const items = ids.map(findDev).filter(f => f && !isZeroU(f.dev));
+  if (!items.length) return;
+  const ignore = new Set(items.map(f => f.dev.id));
+  for (let k = 1; k <= 100; k++) {
+    const du = dir * k;
+    if (items.some(f => f.dev.u + du < 1 || f.dev.u + du + f.dev.h - 1 > f.rack.units)) break;
+    if (items.every(f => !conflict(f.rack, { ...f.dev, u: f.dev.u + du }, ignore)))
+      return applyMoves(items.map(f => ({ id: f.dev.id, rackId: f.rack.id, patch: { u: f.dev.u + du } })));
+  }
+  toast(dir > 0 ? 'No free space above' : 'No free space below');
+}
+let armTimer;
+function arm(id) { ui.armed = id; clearTimeout(armTimer); armTimer = setTimeout(() => (ui.armed = null), 3000); }
+function deleteDevices(ids) {
+  const set = new Set(ids);
+  mutate(() => {
+    for (const r of doc.racks) r.devices = r.devices.filter(d => !set.has(d.id));
+    doc.cables = doc.cables.filter(c => !set.has(c.a) && !set.has(c.b));
+  });
+}
+function deleteSel(force = false) {
+  const s = ui.sel; if (!s) return;
+  if (ui.multi.size > 1 || s.kind === 'device') {
+    const ids = selectedDevIds();
+    ui.multi.clear(); ui.sel = null;
+    deleteDevices(ids);
+    return ids.length > 1 && toast(`Deleted ${ids.length} devices`);
+  }
+  if (s.kind === 'rack') {
+    const r = doc.racks.find(r => r.id === s.id); if (!r) return;
+    if (r.devices.length && !force && ui.armed !== r.id) { arm(r.id); return toast(`Press Delete again to remove ${r.name} and its ${r.devices.length} device(s)`); }
+    const ids = new Set(r.devices.map(d => d.id));
+    ui.sel = null;
+    mutate(() => {
+      doc.racks.splice(doc.racks.indexOf(r), 1);
+      doc.cables = doc.cables.filter(c => !ids.has(c.a) && !ids.has(c.b));
+    });
+  } else if (s.kind === 'cable') {
+    ui.sel = null;
+    mutate(() => (doc.cables = doc.cables.filter(c => c.id !== s.id)));
+  }
+}
+/* copy / paste / duplicate devices */
+function copySel() {
+  const ids = selectedDevIds();
+  if (!ids.length) return toast('Select devices to copy');
+  ui.clip = ids.map(id => JSON.parse(JSON.stringify(findDev(id).dev)));
+  toast(`Copied ${ids.length} device${ids.length > 1 ? 's' : ''}. Ctrl+V pastes into the selected rack`);
+}
+function placeCopies(pairs) {   // pairs: [{ src, rack }]
+  const added = [];
+  let skipped = 0;
+  mutate(() => {
+    for (const { src, rack } of pairs.sort((a, b) => b.src.u - a.src.u)) {
+      const d = { ...JSON.parse(JSON.stringify(src)), id: uid() };
+      if (isZeroU(d)) {
+        const pos = freeZeroU(rack, d);
+        if (!pos) { skipped++; continue; }
+        Object.assign(d, pos);
+      } else {
+        const u = nearestFree(rack, d, clamp(d.u, 1, Math.max(1, rack.units - d.h + 1)));
+        if (!u) { skipped++; continue; }
+        d.u = u;
+      }
+      rack.devices.push(d);
+      added.push(d.id);
+    }
+    setMulti(added);
+  });
+  toast(`${added.length ? `Added ${added.length} device${added.length > 1 ? 's' : ''}` : 'Nothing added'}${skipped ? `, ${skipped} didn't fit` : ''}`);
+}
+function pasteClip() {
+  const rack = targetRack();
+  if (!ui.clip?.length) return toast('Nothing to paste. Copy devices with Ctrl+C first');
+  if (!rack) return toast('Add a rack first');
+  placeCopies(ui.clip.map(src => ({ src, rack })));
+}
+function duplicateSel() {
+  const ids = selectedDevIds();
+  if (!ids.length) return toast('Select devices to duplicate');
+  placeCopies(ids.map(findDev).map(f => ({ src: f.dev, rack: f.rack })));
+}
+function saveTemplate(dev) {
+  const fields = { h: dev.h, depth: dev.depth, mount: dev.mount };
+  if (isZeroU(dev)) fields.length = dev.length;
+  for (const k of DEV_FIELDS) if (dev[k] !== undefined && !['hostname', 'ip', 'serial', 'notes'].includes(k)) fields[k] = dev[k];
+  const t = { id: uid(), name: dev.name, type: dev.type, fields };
+  mutate(() => doc.settings.templates.push(t));
+  toast(`Saved “${dev.name}” as a template in the equipment list`);
+}
+
+function syncToolbar() {
+  const two = ui.view === '2d';
+  $('#faceSeg').hidden = !two;
+  $('#routeSeg').hidden = !two;
+  $('#zoomLbl').hidden = !two;
+  $('#tidyBtn').hidden = !two || doc.settings.route !== 'ortho';
+  $('#cableTypeWrap').hidden = ui.mode !== 'connect';
+  stage.dataset.mode = ui.mode;
+  const on = (sel, attr, v) => { for (const b of document.querySelectorAll(sel)) b.classList.toggle('on', b.dataset[attr] === v); };
+  on('#viewSeg button', 'view', ui.view);
+  on('#faceSeg button', 'face', ui.face);
+  on('#routeSeg button', 'route', doc.settings.route);
+  on('#modeSeg button', 'mode', ui.mode);
+}
+function setMode(m) {
+  ui.mode = m; ui.pending = null;
+  if (m !== 'measure') ui.measure = null;
+  syncToolbar();
+  renderStage();
+}
+function setView(v) {
+  ui.view = v;
+  svg.toggleAttribute('hidden', v !== '2d');
+  threeEl.hidden = v !== '3d';
+  syncToolbar();
+  if (v === '3d' && init3D()) { resize3D(); build3D(); if (!T.framed) { frame3D(); T.framed = true; } }
+  renderStage();
+}
+function setFace(f) {
+  ui.face = f; ui.pending = null; ui.measure = null;
+  cancelRewire();
+  syncToolbar();
+  renderStage();
+}
+
+/* ================= pointer interaction (2D) ================= */
+svg.addEventListener('contextmenu', e => e.preventDefault());
+function capture(e) { try { svg.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ } }
+const touches = new Map();
+let pinch = null;
+function touchInfo() {
+  const [a, b] = [...touches.values()], r = svg.getBoundingClientRect();
+  return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2 - r.left, my: (a.y + b.y) / 2 - r.top };
+}
+svg.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'touch') {
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (touches.size === 2) {
+      ui.drag = null; ui.pan = null; ui.marquee = null; cancelRewire();
+      if (ui.measure?.active) ui.measure = null;
+      pinch = { ...touchInfo(), cam: { ...ui.cam } };
+      capture(e);
+      return schedule();
+    }
+  }
+  const p = toWorld(e);
+  const startPan = () => { ui.pan = { sx: e.clientX, sy: e.clientY, cx: ui.cam.x, cy: ui.cam.y }; capture(e); };
+  if (e.button === 1 || e.button === 2) return startPan();
+  if (e.button !== 0) return;
+  const devEl = e.target.closest('[data-dev]'), cabEl = e.target.closest('[data-cable]'), rackEl = e.target.closest('[data-rack]');
+
+  if (ui.mode === 'measure') {
+    ui.measure = { a: p, b: p, active: true };
+    capture(e);
+    return schedule();
+  }
+  if (ui.mode === 'connect') {
+    if (devEl) connectClick(devEl.dataset.dev, e.target.closest('[data-port]')?.dataset.port || '');
+    else if (ui.pending) { ui.pending = null; renderAll(); }
+    else startPan();
+    return;
+  }
+  // grab a cable end: a handle on the selected cable, or a plugged-in port
+  const endEl = e.target.closest('[data-end]'), usedPt = e.target.closest('.pt.used');
+  let grab = endEl && { cid: endEl.dataset.cid, end: endEl.dataset.end };
+  if (!grab && usedPt && devEl && !e.shiftKey) {
+    const dev = devEl.dataset.dev, key = usedPt.dataset.port, c = portUse()[dev]?.[key];
+    if (c) grab = { cid: c.id, end: c.a === dev && c.pa === key ? 'a' : 'b' };
+  }
+  if (grab) {
+    ui.rewire = { ...grab, sx: e.clientX, sy: e.clientY, moved: false, target: null };
+    stage.classList.add('rewiring');
+    capture(e);
+    return;
+  }
+  if (devEl) {
+    const id = devEl.dataset.dev;
+    if (e.shiftKey || e.ctrlKey || e.metaKey) return toggleMulti(id);
+    const f = findDev(id), b = devRect(layout(), f.rack, f.dev);
+    const group = ui.multi.size > 1 && ui.multi.has(id) ? [...ui.multi] : [id];
+    ui.drag = { ids: group, primary: id, offY: p.y - b.y, sx: e.clientX, sy: e.clientY, moved: false, targets: null, err: null };
+    capture(e);
+    if (group.length === 1) return select('device', id);
+    ui.sel = { kind: 'device', id };
+    return renderAll();
+  }
+  if (cabEl) return select('cable', cabEl.dataset.cable);
+  if (e.shiftKey) {   // box select
+    ui.marquee = { a: p, b: p, add: e.ctrlKey || e.metaKey, sx: e.clientX, sy: e.clientY };
+    capture(e);
+    return schedule();
+  }
+  if (rackEl) select('rack', rackEl.dataset.rack);
+  else if (ui.sel || ui.multi.size) select(null);
+  startPan();
+});
+svg.addEventListener('pointermove', e => {
+  if (touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinch && touches.size === 2) {
+    const t = touchInfo(), c = pinch.cam, k2 = clamp(c.k * t.d / pinch.d, 0.03, 8);
+    const wx = (pinch.mx - c.x) / c.k, wy = (pinch.my - c.y) / c.k;
+    ui.cam = { k: k2, x: t.mx - wx * k2, y: t.my - wy * k2 };
+    ui.userMoved = true;
+    return schedule();
+  }
+  const p = toWorld(e), pe = e.target.closest?.('[data-port]');
+  ui.hover = p;
+  ui.hoverPort = pe ? { dev: pe.closest('[data-dev]').dataset.dev, key: pe.dataset.port } : null;
+  if (ui.pan) {
+    ui.cam.x = ui.pan.cx + e.clientX - ui.pan.sx;
+    ui.cam.y = ui.pan.cy + e.clientY - ui.pan.sy;
+    ui.userMoved = true;
+  } else if (ui.rewire) {
+    if (!ui.rewire.moved && Math.hypot(e.clientX - ui.rewire.sx, e.clientY - ui.rewire.sy) < 4) return;
+    ui.rewire.moved = true;
+    ui.rewire.target = rewireTarget(e);
+  } else if (ui.drag) {
+    if (!ui.drag.moved && Math.hypot(e.clientX - ui.drag.sx, e.clientY - ui.drag.sy) < 4) return;
+    ui.drag.moved = true;
+    dragTargets(p);
+  } else if (ui.marquee) {
+    ui.marquee.b = p;
+  } else if (ui.measure?.active) {
+    ui.measure.b = p;
+  }
+  schedule();
+});
+/* where the dragged device(s) would land */
+function dragTargets(p) {
+  const L = layout(), D = ui.drag, f = findDev(D.primary), fx = frontX(L, p.x);
+  if (!f) return;
+  if (isZeroU(f.dev)) {
+    const rack = rackAtX(L, fx, true), R = L.racks[rack.id];
+    const len = Math.min(f.dev.length || T_(f.dev).len, rack.units * U_MM);
+    const patch = { side: fx < R.x + rack.width / 2 ? 'left' : 'right', length: len,
+      offset: clamp(Math.round((p.y - D.offY - R.railTop) / U_MM) * U_MM, 0, rack.units * U_MM - len) };
+    D.targets = [{ id: f.dev.id, rackId: rack.id, patch }];
+    D.err = conflict(rack, { ...f.dev, ...patch });
+    return;
+  }
+  if (D.ids.length === 1) {
+    const rack = rackAtX(L, fx, true), R = L.racks[rack.id], patch = {};
+    if (isHalf(f.dev)) patch.half = fx < R.px + PANEL_W / 2 ? 'left' : 'right';
+    const cand = { ...f.dev, ...patch };
+    let u = uFromTop(R, rack, p.y - D.offY, f.dev.h), err = conflict(rack, { ...cand, u });
+    if (err) { const n = nearestFree(rack, cand, u, f.dev.h + 2); if (n) { u = n; err = null; } }
+    patch.u = u;
+    D.targets = [{ id: f.dev.id, rackId: rack.id, patch }];
+    D.err = err;
+    return;
+  }
+  // a group moves up or down together; every device stays in its own rack
+  const ignore = new Set(D.ids), R = L.racks[f.rack.id];
+  const du = uFromTop(R, f.rack, p.y - D.offY, f.dev.h) - f.dev.u;
+  D.targets = []; D.err = null;
+  for (const id of D.ids) {
+    const g = findDev(id);
+    if (!g || isZeroU(g.dev)) continue;
+    const patch = { u: g.dev.u + du };
+    D.targets.push({ id, rackId: g.rack.id, patch });
+    D.err ||= conflict(g.rack, { ...g.dev, ...patch }, ignore);
+  }
+}
+/* moving a cable end to another port */
+function rewireTarget(e) {
+  const el = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-port]');
+  if (!el) return null;
+  const dev = el.closest('[data-dev]').dataset.dev, key = el.dataset.port, { cid, end } = ui.rewire;
+  const c = doc.cables.find(c => c.id === cid), cur = c['p' + end], busy = portUse()[dev]?.[key];
+  const d = findDev(dev).dev;
+  const err = dev === (end === 'a' ? c.b : c.a) ? 'A cable needs two different devices'
+    : portKind(key) !== portKind(cur) ? (portKind(cur) === 'power' ? 'A power cable needs a power port' : 'A data cable needs a data port')
+    : portKind(key) === 'power' && key[0] !== cur[0] ? (cur[0] === 'o' ? 'Move it to another outlet' : 'Move it to another power inlet')
+    : busy && busy !== c ? `${d.name} ${portName(d, key)} is already in use` : null;
+  return { dev, key, err };
+}
+function cancelRewire() {
+  ui.rewire = null;
+  stage.classList.remove('rewiring');
+}
+function finishRewire() {
+  const r = ui.rewire;
+  cancelRewire();
+  if (!r.moved) return select('cable', r.cid);
+  const t = r.target, c = doc.cables.find(c => c.id === r.cid);
+  if (t?.err) toast(t.err);
+  else if (t && c && !(c[r.end] === t.dev && c['p' + r.end] === t.key)) {
+    ui.sel = { kind: 'cable', id: c.id };
+    mutate(() => { c[r.end] = t.dev; c['p' + r.end] = t.key; });
+    const d = findDev(t.dev).dev, warn = cableCheck(c);
+    return toast(warn ? '⚠ ' + warn : `Moved to ${d.name} ${portName(d, t.key)}`);
+  }
+  renderAll();
+}
+function finishMarquee() {
+  const { a, b, add, sx, sy } = ui.marquee, L = layout();
+  ui.marquee = null;
+  const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x), y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+  const hits = [];
+  for (const r of doc.racks) for (const d of r.devices) {
+    const rb = devRect(L, r, d), vx = ui.face === 'rear' ? L.w - rb.x - rb.w : rb.x;
+    if (vx < x1 && vx + rb.w > x0 && rb.y < y1 && rb.y + rb.h > y0) hits.push(d.id);
+  }
+  setMulti(add ? [...new Set([...selectedDevIds(), ...hits])] : hits);
+  if (ui.sel) ui.lastRack = findDev(ui.sel.id)?.rack.id;
+  renderAll();
+  if (hits.length > 1) toast(`${ui.multi.size} devices selected`);
+}
+function endPointer(e) {
+  touches.delete(e?.pointerId);
+  if (pinch) { if (touches.size < 2) pinch = null; ui.pan = null; return; }
+  if (ui.rewire) return finishRewire();
+  if (ui.marquee) return finishMarquee();
+  if (ui.drag) {
+    const D = ui.drag; ui.drag = null;
+    if (D.moved && D.targets?.length) { if (D.err) toast(D.err); else applyMoves(D.targets); }
+    renderAll();
+  }
+  ui.pan = null;
+  if (ui.measure) ui.measure.active = false;
+  schedule();
+}
+svg.addEventListener('pointerup', endPointer);
+svg.addEventListener('pointercancel', endPointer);
+svg.addEventListener('pointerleave', () => { if (!ui.drag && !ui.pan && !ui.rewire && !ui.marquee) { ui.hover = null; schedule(); } });
+function zoomAt(mx, my, factor) {
+  const k = ui.cam.k, k2 = clamp(k * factor, 0.03, 8);
+  ui.cam.x = mx - (mx - ui.cam.x) * k2 / k;
+  ui.cam.y = my - (my - ui.cam.y) * k2 / k;
+  ui.cam.k = k2;
+  ui.userMoved = true;
+  schedule();
+}
+function zoomBy(factor) {
+  if (ui.view === '3d') {
+    if (!T.ready) return;
+    const v = T.camera.position.clone().sub(T.controls.target).multiplyScalar(1 / factor);
+    T.camera.position.copy(T.controls.target).add(v);
+    return;
+  }
+  const r = svg.getBoundingClientRect();
+  zoomAt(r.width / 2, r.height / 2, factor);
+}
+svg.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = svg.getBoundingClientRect();
+  zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.0015));
+}, { passive: false });
+
+/* drop from the equipment list */
+svg.addEventListener('dragover', e => { if (e.dataTransfer.types.includes('text/x-rack-type')) e.preventDefault(); });
+svg.addEventListener('drop', e => {
+  const data = e.dataTransfer.getData('text/x-rack-type');
+  if (!data) return;
+  e.preventDefault();
+  const L = layout(), p = toWorld(e), rack = rackAtX(L, frontX(L, p.x));
+  if (!rack) return toast('Drop it onto a rack');
+  const [type, tid] = data.split(':'), tpl = tid && doc.settings.templates.find(t => t.id === tid);
+  const fields = tpl ? { ...tpl.fields, name: tpl.name } : { mount: TYPES[type].zeroU ? 'rear' : ui.face };
+  const h = tpl?.fields.h || TYPES[type].h;
+  if (TYPES[type].zeroU) return addDevice(type, rack, null, fields);
+  addDevice(type, rack, uFromTop(L.racks[rack.id], rack, p.y - h * U_MM / 2, h), fields);
+});
+
+/* ================= side panels ================= */
+function renderRackList() {
+  const pm = ui.power;
+  rackListEl.innerHTML = doc.racks.length ? doc.racks.map(r => {
+    const sel = isSel('rack', r.id) || selectedDevIds().some(id => findDev(id)?.rack === r);
+    const used = usedU(r), pct = Math.round(used / r.units * 100), info = pm.racks.find(x => x.rack === r);
+    const heavy = info.kg > info.maxKg;
+    return `<div class="item rack-item${sel ? ' sel' : ''}" data-id="${r.id}" title="${used} of ${r.units}U used (${pct} %) · ${fmtW(info.watts)} · ${fmtKg(info.kg)}">
+      <div class="ri-top"><span class="grow">${esc(r.name)}${heavy ? ' <span class="warn-dot" title="Over its weight limit">⚠</span>' : ''}</span><span class="muted">${used}/${r.units}U</span></div>
+      <div class="meter"><i class="${pct >= 90 ? 'full' : ''}" style="width:${pct}%"></i></div></div>`;
+  }).join('') : '<div class="empty">No racks yet.</div>';
+}
+rackListEl.addEventListener('click', e => { const it = e.target.closest('[data-id]'); if (it) select('rack', it.dataset.id); });
+
+function renderCableList() {
+  const name = id => esc(findDev(id)?.dev.name ?? '?');
+  $('#cableCount').textContent = doc.cables.length || '';
+  if (!doc.cables.length) { cableListEl.innerHTML = '<div class="empty">No cables yet. Pick the Cable tool, then click a port and a port on another device.</div>'; return; }
+  const totals = {}, lens = cableLengths();
+  const rows = doc.cables.map(c => {
+    const len = lens[c.id] || 0, t = ctype(c.type), std = stdLength(len, t.kind), warn = cableCheck(c);
+    const tt = (totals[c.type] ||= { n: 0, len: 0, std: {}, custom: 0 });
+    tt.n++; tt.len += len;
+    if (std) tt.std[std] = (tt.std[std] || 0) + 1; else tt.custom++;
+    return `<div class="item cable-item${isSel('cable', c.id) ? ' sel' : ''}" data-id="${c.id}"><span class="sw line" style="--c:${cableColor(c)}"></span>`
+      + `<span class="grow"><span class="ci-main">${name(c.a)}${fmtPort(c.pa)} → ${name(c.b)}${fmtPort(c.pb)}</span><span class="ci-sub">${esc(cableLabel(c))}</span></span>`
+      + `${warn ? `<span class="warn-dot" title="${esc(warn)}">⚠</span>` : ''}<span class="muted" title="Estimated length · stock cord">≈${fmtLong(len)}<br>${std ? fmtStd(std) : 'custom'}</span></div>`;
+  }).join('');
+  const sum = Object.entries(totals).map(([t, v]) => {
+    const parts = Object.entries(v.std).sort((a, b) => a[0] - b[0]).map(([mm, n]) => `${n}× ${fmtStd(+mm)}`);
+    if (v.custom) parts.push(`${v.custom}× custom`);
+    return `<div class="item"><span class="sw line" style="--c:${ctype(t).color}"></span><span class="grow">${esc(ctype(t).name)} · ${v.n}</span><span class="muted">≈${fmtLong(v.len)}</span></div>`
+      + `<div class="bom">${parts.join(' · ')}</div>`;
+  }).join('');
+  cableListEl.innerHTML = rows + `<h3 class="list-sub">Totals · cords to buy</h3>` + sum;
+}
+cableListEl.addEventListener('click', e => { const it = e.target.closest('[data-id]'); if (it) select('cable', it.dataset.id); });
+
+function renderPowerPanel() {
+  const pm = ui.power;
+  const meter = (v, max) => { const pct = max ? Math.min(100, v / max * 100) : 0; return `<div class="meter"><i class="${pct > 100 * 0.999 ? 'over' : pct >= 80 ? 'full' : ''}" style="width:${pct}%"></i></div>`; };
+  let h = '<div class="sub">Racks</div>';
+  h += pm.racks.map(r => `<div class="pw-row" data-rack="${r.rack.id}"><div class="ri-top"><span class="grow">${esc(r.rack.name)}</span><span class="muted">${fmtW(r.watts)} · ${btu(r.watts).toLocaleString()} BTU/h</span></div>`
+    + `<div class="ri-top small"><span class="grow muted">Weight</span><span class="${r.kg > r.maxKg ? 'bad-text' : 'muted'}">${fmtKg(r.kg)} / ${fmtKg(r.maxKg)}</span></div>${meter(r.kg, r.maxKg)}</div>`).join('');
+  if (pm.sources.length) {
+    h += '<div class="sub">Power sources</div>';
+    h += pm.sources.map(s => `<div class="pw-row" data-dev="${s.dev.id}"><div class="ri-top"><span class="grow">${esc(s.dev.name)}${s.dev.feed ? ` <span class="tag">${s.dev.feed}</span>` : ''}</span>`
+      + `<span class="muted">${fmtW(s.normal)}${s.cap ? ' / ' + fmtW(s.cap) : ''}</span></div>${s.cap ? meter(s.worst, s.cap) : ''}`
+      + `<div class="ri-top small"><span class="grow muted">${s.used}/${nOutlets(s.dev)} outlets</span><span class="muted">worst case ${fmtW(s.worst)}</span></div></div>`).join('');
+  }
+  if (pm.warnings.length) h += '<div class="sub">Warnings</div>' + pm.warnings.map(w => `<div class="pw-warn ${w.level}" ${w.id ? `data-dev="${w.id}"` : `data-rack="${w.rack}"`}>⚠ ${esc(w.text)}</div>`).join('');
+  if (pm.unpowered.length) h += `<div class="sub">Not powered yet · ${pm.unpowered.length}</div><div class="hint">${pm.unpowered.map(id => esc(pm.devs[id].dev.name)).join(', ')}</div>`;
+  if (!pm.sources.length && !pm.warnings.length) h += '<p class="hint">Add a PDU, vertical PDU or UPS and connect power cables (rear view) to see loads here.</p>';
+  powerEl.innerHTML = h;
+  $('#powerCount').textContent = pm.warnings.length ? '⚠ ' + pm.warnings.length : '';
+}
+powerEl.addEventListener('click', e => {
+  const d = e.target.closest('[data-dev]'), r = e.target.closest('[data-rack]');
+  if (d) { focusItem({ kind: 'device', id: d.dataset.dev }); } else if (r) select('rack', r.dataset.rack);
+});
+
+/* ---------- properties ---------- */
+const opt = (v, label, cur) => `<option value="${esc(v)}"${String(v) === String(cur ?? '') ? ' selected' : ''}>${esc(label)}</option>`;
+const optsOf = (obj, cur) => Object.entries(obj).map(([k, v]) => opt(k, typeof v === 'string' ? v : v.label, cur)).join('');
+function typeOptions(cur) {
+  return CATS.map(([cat, label]) => `<optgroup label="${label}">` + Object.entries(TYPES).filter(([, t]) => t.cat === cat).map(([k, t]) => opt(k, t.label, cur)).join('') + '</optgroup>').join('');
+}
+function cableTypeOptions(cur) {
+  const g = kind => doc.settings.cableTypes.filter(t => t.kind === kind).map(t => opt(t.id, t.name, cur)).join('');
+  return `<optgroup label="Data">${g('data')}</optgroup><optgroup label="Power">${g('power')}</optgroup>`;
+}
+function deviceOptions(selected) {
+  return doc.racks.map(r => `<optgroup label="${esc(r.name)}">` +
+    [...r.devices].sort((a, b) => b.u - a.u).map(d => opt(d.id, `${isZeroU(d) ? '0U' : 'U' + d.u} · ${d.name}`, selected)).join('') + '</optgroup>').join('');
+}
+function portOptions(devId, sel, cabId, kind) {
+  const f = findDev(devId); if (!f) return '';
+  const use = portUse()[devId] || {}, d = f.dev;
+  let h = '';
+  for (const c of kind === 'power' ? ['o', 'i'] : ['p', 'u'])
+    for (let i = 1; i <= portCount(d, c); i++) {
+      const k = c + i, busy = use[k] && use[k].id !== cabId;
+      h += `<option value="${k}"${k === sel ? ' selected' : ''}${busy ? ' disabled' : ''}>${esc(portLabel(d, k))}${busy ? ' · in use' : ''}</option>`;
+    }
+  return h || '<option value="">No ports of this kind</option>';
+}
+const allPortKeys = d => ['p', 'u', 'i', 'o'].flatMap(c => Array.from({ length: portCount(d, c) }, (_, i) => c + (i + 1)));
+function portTableHTML(dev) {
+  const keys = allPortKeys(dev);
+  if (!keys.length) return '';
+  const used = portUse()[dev.id] || {};
+  const rows = keys.map(k => {
+    const c = used[k];
+    let to = '<span class="muted">—</span>';
+    if (c) {
+      const [od, ok] = c.a === dev.id && c.pa === k ? [c.b, c.pb] : [c.a, c.pa], o = findDev(od);
+      to = `<i class="sw line" style="--c:${cableColor(c)}"></i>${o ? esc(o.dev.name) + ' ' + portShort(ok) : '?'}`;
+    }
+    return `<tr${c ? ` data-cid="${c.id}" class="link"` : ''}><td>${portShort(k)}</td><td class="muted">${esc(connName(dev, k))}</td><td>${to}</td></tr>`;
+  }).join('');
+  return `<details class="ptable"><summary>Port map · ${Object.keys(used).length} of ${keys.length} in use</summary><table>${rows}</table></details>`;
+}
+function devicePropsHTML(rack, dev) {
+  const u = ui.unit, z = isZeroU(dev), pm = ui.power, warn = devWarn(rack, dev);
+  const src = pm.sources.find(s => s.dev.id === dev.id), feeds = pm.feeds[dev.id] || [];
+  const pwarn = pm.warnings.filter(w => w.id === dev.id).map(w => w.text);
+  const used = Object.keys(portUse()[dev.id] || {}).length, total = allPortKeys(dev).length;
+  const placement = z ? `<div class="grid2">
+      <label>Side<select data-f="side">${opt('left', 'Left', dev.side)}${opt('right', 'Right', dev.side)}</select></label>
+      <label>Faces<select data-f="mount">${opt('rear', 'Rear', dev.mount)}${opt('front', 'Front', dev.mount)}</select></label>
+      <label>Length (${u})<input data-f="length" type="number" step="any" min="0" value="${toDisp(dev.length || T_(dev).len)}"></label>
+      <label>From the top (${u})<input data-f="offset" type="number" step="any" min="0" value="${toDisp(dev.offset || 0)}"></label>
+    </div>` : `<div class="grid2">
+      <label>Height (U)<input data-f="h" type="number" min="1" max="${rack.units}" value="${dev.h}"></label>
+      <label>Bottom U<input data-f="u" type="number" min="1" max="${rack.units}" value="${dev.u}"></label>
+      <label>Width<select data-f="half">${opt('', 'Full width', dev.half || '')}${opt('left', 'Half · left', dev.half)}${opt('right', 'Half · right', dev.half)}</select></label>
+      <label>Mounted<select data-f="mount">${opt('front', 'Front', dev.mount)}${opt('rear', 'Rear', dev.mount)}</select></label>
+      <label>Depth (${u})<input data-f="depth" type="number" step="any" min="1" value="${toDisp(dev.depth)}"></label>
+    </div>`;
+  const data = hasData(dev) || hasUp(dev) ? `<h4>Data ports</h4><div class="grid2">
+      ${hasData(dev) ? `<label>Ports<input data-f="ports" type="number" min="0" max="96" list="portCounts" value="${nPorts(dev)}"></label>
+      <label>Connector<select data-f="portType">${optsOf(DATA_CONN, portConn(dev))}</select></label>` : ''}
+      ${hasUp(dev) ? `<label>Uplinks<input data-f="uplinks" type="number" min="0" max="16" value="${nUplinks(dev)}"></label>
+      <label>Uplink type<select data-f="uplinkType">${optsOf(UPLINK_TYPES, upType(dev))}</select></label>` : ''}
+    </div>` : '';
+  const power = hasIn(dev) || hasOut(dev) ? `<h4>Power</h4><div class="grid2">
+      ${hasOut(dev) ? `<label>Outlets<input data-f="outlets" type="number" min="0" max="48" value="${nOutlets(dev)}"></label>
+      <label>Outlet type<select data-f="outletType">${optsOf(OUTLET_NAME, outletType(dev))}</select></label>
+      <label>Capacity (W)<input data-f="capacity" type="number" min="0" step="10" value="${capacity(dev)}"></label>
+      <label>Feed<select data-f="feed" title="Label redundant feeds to check that dual power supplies are split">${opt('', 'Not set', dev.feed || '')}${opt('A', 'Feed A', dev.feed)}${opt('B', 'Feed B', dev.feed)}</select></label>` : ''}
+      ${hasIn(dev) ? `<label>Power inlets<input data-f="inlets" type="number" min="0" max="4" value="${nInlets(dev)}"></label>
+      <label>Inlet type<select data-f="inletType">${optsOf(INLET_NAME, inletType(dev))}</select></label>` : ''}
+      <label>Draw (W)<input data-f="watts" type="number" min="0" step="5" value="${watts(dev)}"></label>
+    </div>` : '';
+  const stats = [
+    ['Occupies', z ? `0U · ${dev.side} side` : `U${dev.u}${dev.h > 1 ? '–' + (dev.u + dev.h - 1) : ''}${isHalf(dev) ? ' · half' : ''}`],
+    ['Size', z ? `${fmt(dev.length || T_(dev).len)} long` : `${fmt(dev.h * U_MM)} × ${fmt(dev.depth)} deep`],
+    total ? ['Ports in use', `${used} of ${total}`] : null,
+    src ? ['Load', `${fmtW(src.normal)}${src.cap ? ' of ' + fmtW(src.cap) : ''} · worst ${fmtW(src.worst)}`] : null,
+    watts(dev) ? ['Heat', `${btu(watts(dev))} BTU/h`] : null,
+    feeds.length ? ['Fed from', feeds.map(f => `${portShort(f.inlet)} ← ${esc(pm.devs[f.src].dev.name)} ${portShort(f.outlet)}`).join('<br>')] : null,
+  ].filter(Boolean);
+  const warns = [warn, ...pwarn].filter(Boolean);
+  return `<div class="stack">
+    <label>Name<input data-f="name" value="${esc(dev.name)}"></label>
+    <div class="grid2">
+      <label>Type<select data-f="type">${typeOptions(dev.type)}</select></label>
+      <label>Rack<select data-f="rack">${doc.racks.map(x => opt(x.id, x.name, rack.id)).join('')}</select></label>
+    </div>
+    <div class="color-row"><span>Color</span><input type="color" data-f="color" value="${devColor(dev)}"><button data-act="resetColor"${dev.color ? '' : ' disabled'}>Use category color</button></div>
+    <h4>Placement</h4>${placement}
+    ${data}${power}
+    <h4>Details</h4>
+    <div class="grid2">
+      <label>Hostname<input data-f="hostname" value="${esc(dev.hostname || '')}"></label>
+      <label>IP address<input data-f="ip" value="${esc(dev.ip || '')}"></label>
+      <label>Serial number<input data-f="serial" value="${esc(dev.serial || '')}"></label>
+      <label>Weight (kg)<input data-f="weight" type="number" step="any" min="0" value="${weight(dev)}"></label>
+      <label class="full">Notes<textarea data-f="notes" rows="2">${esc(dev.notes || '')}</textarea></label>
+    </div>
+    <dl class="kv">${stats.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+    ${warns.map(w => `<p class="warn">⚠ ${esc(w)}</p>`).join('')}
+    <div class="row">${z ? '' : '<button data-act="up" title="Move up to the next free slot">▲</button><button data-act="down" title="Move down to the next free slot">▼</button>'}<button data-act="dup">Duplicate</button><button data-act="template" title="Add it to the equipment list for reuse">Save as template</button><button data-act="del" class="danger">Delete</button></div>
+    ${portTableHTML(dev)}
+  </div>`;
+}
+function rackPropsHTML(r) {
+  const u = ui.unit, used = usedU(r), usable = r.units * U_MM, info = ui.power.racks.find(x => x.rack === r);
+  return `<div class="stack">
+    <div class="grid2">
+      <label>Name<input data-f="name" value="${esc(r.name)}"></label>
+      <label title="Used at the start of cable labels">Label code<input data-f="code" value="${esc(r.code || '')}" placeholder="${esc(rackCode({ ...r, code: '' }))}"></label>
+      <label>Height (U)<input data-f="units" type="number" min="1" max="100" value="${r.units}"></label>
+      <label>Max load (kg)<input data-f="maxLoad" type="number" min="0" step="10" value="${rackMaxLoad(r)}"></label>
+      <label>Width (${u})<input data-f="width" type="number" step="any" value="${toDisp(r.width)}"></label>
+      <label>Depth (${u})<input data-f="depth" type="number" step="any" value="${toDisp(r.depth)}"></label>
+      <label class="full">Cable channel (diagram)<select data-f="channel">${opt('both', 'Both sides · nearest one', r.channel || 'both')}${opt('left', 'Left side only', r.channel)}${opt('right', 'Right side only', r.channel)}</select></label>
+    </div>
+    <dl class="kv">
+      <dt>Usable height</dt><dd>${fmt(usable, 'cm')} · ${fmt(usable, 'in')}</dd>
+      <dt>Outer height</dt><dd>${fmt(rackH(r), 'cm')} · ${fmt(rackH(r), 'in')}</dd>
+      <dt>Usable depth</dt><dd>${fmt(usableDepth(r))}</dd>
+      <dt>Used</dt><dd>${used}U (${Math.round(used / r.units * 100)} %)</dd>
+      <dt>Free</dt><dd>${r.units - used}U · ${fmt((r.units - used) * U_MM)}</dd>
+      <dt>Largest free block</dt><dd>${largestFree(r)}U</dd>
+      <dt>Devices</dt><dd>${r.devices.length}</dd>
+      <dt>Power</dt><dd>${fmtW(info.watts)} · ${btu(info.watts).toLocaleString()} BTU/h</dd>
+      <dt>Weight</dt><dd class="${info.kg > info.maxKg ? 'bad-text' : ''}">${fmtKg(info.kg)} of ${fmtKg(info.maxKg)}</dd>
+    </dl>
+    <div class="row"><button data-act="left" title="Move left">←</button><button data-act="right" title="Move right">→</button><button data-act="dup">Duplicate</button><button data-act="del" class="danger">Delete</button></div>
+  </div>`;
+}
+function cablePropsHTML(c) {
+  const t = ctype(c.type), A = findDev(c.a), B = findDev(c.b), kind = portKind(c.pa);
+  const len = cableLengths()[c.id] || 0, std = stdLength(len, kind), warn = cableCheck(c);
+  return `<div class="stack">
+    <label>Type<select data-f="type">${cableTypeOptions(c.type)}</select></label>
+    <div class="color-row"><span>Color</span><input type="color" data-f="color" value="${cableColor(c)}"><button data-act="resetColor"${c.color ? '' : ' disabled'}>Use type color</button></div>
+    <label>Label<input data-f="label" value="${esc(c.label)}" placeholder="${esc(autoLabel(c))}"></label>
+    <div class="grid2">
+      <label>From<select data-f="a">${deviceOptions(c.a)}</select></label>
+      <label>Port<select data-f="pa">${portOptions(c.a, c.pa, c.id, kind)}</select></label>
+      <label>To<select data-f="b">${deviceOptions(c.b)}</select></label>
+      <label>Port<select data-f="pb">${portOptions(c.b, c.pb, c.id, kind)}</select></label>
+    </div>
+    ${A && B && A.rack !== B.rack ? `<label>Between racks<select data-f="via">${opt('', `Default (${doc.settings.via === 'bottom' ? 'underfloor' : 'overhead tray'})`, c.via || '')}${opt('top', 'Overhead tray', c.via)}${opt('bottom', 'Underfloor', c.via)}</select></label>` : ''}
+    <label>Notes<textarea data-f="notes" rows="2">${esc(c.notes || '')}</textarea></label>
+    <dl class="kv"><dt>Estimated length</dt><dd>≈ ${fmtLong(len)} · ${fmt(len, 'in')}</dd><dt>Stock ${t.kind === 'power' ? 'power cord' : 'patch cord'}</dt><dd>${std ? fmtStd(std) : 'custom length'}</dd></dl>
+    ${warn ? `<p class="warn">⚠ ${esc(warn)}</p>` : ''}
+    <p class="hint">Length follows the drawn route plus 10 % slack. Drag either end in the 2D view to plug it into another port.</p>
+    <div class="row"><button data-act="del" class="danger">Delete</button></div>
+  </div>`;
+}
+function multiPropsHTML(ids) {
+  const devs = ids.map(findDev).filter(Boolean);
+  const hU = devs.reduce((s, f) => s + (isZeroU(f.dev) ? 0 : f.dev.h), 0);
+  return `<div class="stack">
+    <p class="multi-head"><strong>${devs.length} devices selected</strong></p>
+    <dl class="kv"><dt>Rack units</dt><dd>${hU}U</dd><dt>Power</dt><dd>${fmtW(devs.reduce((s, f) => s + watts(f.dev), 0))}</dd><dt>Weight</dt><dd>${fmtKg(devs.reduce((s, f) => s + weight(f.dev), 0))}</dd></dl>
+    <div class="color-row"><span>Color</span><input type="color" data-mf="color" value="${devColor(devs[0].dev)}"><button data-mact="resetColor">Use category colors</button></div>
+    <label>Move to rack<select data-mf="rack"><option value="">Choose a rack…</option>${doc.racks.map(r => opt(r.id, r.name, '')).join('')}</select></label>
+    <div class="row"><button data-mact="up" title="Move them all up">▲</button><button data-mact="down" title="Move them all down">▼</button><button data-mact="dup">Duplicate</button><button data-mact="copy">Copy</button><button data-mact="del" class="danger">Delete all</button></div>
+    <ul class="mlist">${devs.map(f => `<li data-id="${f.dev.id}"><span class="sw k-${T_(f.dev).cat}" ${f.dev.color ? `style="--c:${f.dev.color}"` : ''}></span>${esc(f.dev.name)}<span class="muted">${esc(f.rack.name)} · ${isZeroU(f.dev) ? '0U' : 'U' + f.dev.u}</span></li>`).join('')}</ul>
+    <p class="hint">Shift-click adds or removes a device · Shift-drag on empty space selects with a box · Ctrl+C, Ctrl+V and Ctrl+D copy, paste and duplicate.</p>
+  </div>`;
+}
+function globalPropsHTML() {
+  const s = doc.settings;
+  return `<div class="stack">
+    <div class="empty-props"><svg class="ic"><use href="#i-cursor"/></svg>
+      <p><strong>Nothing selected</strong><br>Click a rack, device or cable to edit it. Shift-click or Shift-drag selects several devices.</p></div>
+    <h4>Layout</h4>
+    <label>Space between racks (${ui.unit})<input data-g="gap" type="number" step="any" min="0" value="${toDisp(s.gap)}"></label>
+    <h4>Cables between racks</h4>
+    <label>Route in diagram view<select data-g="via">${opt('top', 'Overhead tray', s.via)}${opt('bottom', 'Underfloor', s.via)}</select></label>
+    <h4>Cable labels</h4>
+    <label>Pattern<input data-g="labelPattern" value="${esc(s.labelPattern)}" spellcheck="false"></label>
+    <p class="hint">Tokens: {rack} {u} {port} {device}. Example: ${esc(doc.cables[0] ? endLabel(doc.cables[0].a, doc.cables[0].pa) : 'A-U41-P1')}</p>
+    <label class="check"><input type="checkbox" data-g="showLabels"${s.showLabels ? ' checked' : ''}> Show labels at cable ends</label>
+    <p class="hint">Stock cord lengths are suggested in metres, or in feet when units are inches.</p>
+  </div>`;
+}
+function renderProps() {
+  const s = ui.sel, multi = ui.multi.size > 1;
+  $('#propsTitle').textContent = multi ? 'Selection' : { device: 'Device', rack: 'Rack', cable: 'Cable' }[s?.kind] || 'Properties';
+  let h;
+  if (multi) h = multiPropsHTML([...ui.multi]);
+  else if (s?.kind === 'device' && findDev(s.id)) { const f = findDev(s.id); h = devicePropsHTML(f.rack, f.dev); }
+  else if (s?.kind === 'rack' && doc.racks.some(r => r.id === s.id)) h = rackPropsHTML(doc.racks.find(r => r.id === s.id));
+  else if (s?.kind === 'cable' && doc.cables.some(c => c.id === s.id)) h = cablePropsHTML(doc.cables.find(c => c.id === s.id));
+  else h = globalPropsHTML();
+  propsEl.innerHTML = h;
+}
+
+propsEl.addEventListener('change', e => {
+  const el = e.target, raw = el.type === 'checkbox' ? el.checked : el.value, s = ui.sel;
+  if (el.dataset.g) {
+    const g = el.dataset.g;
+    if (g === 'gap') return mutate(() => (doc.settings.gap = Math.max(0, fromDisp(+raw || 0))));
+    if (g === 'labelPattern') return mutate(() => (doc.settings.labelPattern = String(raw).trim() || '{rack}-U{u}-{port}'));
+    return mutate(() => (doc.settings[g] = raw));
+  }
+  if (el.dataset.mf) return updateMulti(el.dataset.mf, raw);
+  const f = el.dataset.f;
+  if (!f || !s) return;
+  if (s.kind === 'device') updateDevice(s.id, f, raw);
+  else if (s.kind === 'rack') updateRack(s.id, f, raw);
+  else if (s.kind === 'cable') updateCable(s.id, f, raw);
+});
+function updateCable(id, f, raw) {
+  const c = doc.cables.find(c => c.id === id);
+  if (f === 'a' || f === 'b') {
+    if (raw === (f === 'a' ? c.b : c.a)) { toast('A cable needs two different devices'); return renderProps(); }
+    const d = findDev(raw).dev, cur = c['p' + f];
+    const k = firstFree(d, portUse()[raw], portKind(cur) === 'power' ? cur[0] : 'data');
+    if (!k) { toast(`“${d.name}” has no free ${portKind(cur) === 'power' ? (cur[0] === 'o' ? 'outlets' : 'power inlets') : 'ports'}`); return renderProps(); }
+    return mutate(() => { c[f] = raw; c['p' + f] = k; });
+  }
+  if (f === 'via') return mutate(() => { if (raw) c.via = raw; else delete c.via; });
+  if (f === 'label' || f === 'notes') return mutate(() => (c[f] = String(raw).trim()));
+  mutate(() => (c[f] = raw));
+  if (f === 'type' && cableCheck(c)) toast('⚠ ' + cableCheck(c));
+}
+function updateDevice(id, f, raw) {
+  const { rack, dev } = findDev(id), next = { ...dev };
+  if (f === 'rack') return moveToRack(id, raw);
+  const ints = { ports: [0, 96], uplinks: [0, 16], inlets: [0, 4], outlets: [0, 48] };
+  if (f === 'name') next.name = raw.trim() || T_(dev).label;
+  else if (f === 'type') {
+    const o = T_(dev), t = TYPES[raw];
+    next.type = raw;
+    if (dev.name === o.label) next.name = t.label;
+    if (dev.depth === o.d) next.depth = t.d;
+    for (const k of ['ports', 'portType', 'uplinks', 'uplinkType', 'inlets', 'inletType', 'outlets', 'outletType', 'watts', 'capacity', 'weight']) delete next[k];
+    if (t.zeroU && !o.zeroU) {
+      const pos = freeZeroU(rack, { ...next, length: t.len });
+      if (!pos) { toast(`No free side space in ${rack.name}`); return renderProps(); }
+      Object.assign(next, pos, { h: 0, mount: 'rear' });
+    } else if (!t.zeroU && o.zeroU) {
+      for (const k of ['side', 'offset', 'length']) delete next[k];
+      next.h = t.h; next.mount = 'front';
+      next.u = freeSlot(rack, next);
+      if (!next.u) { toast(`No free ${t.h}U space in ${rack.name}`); return renderProps(); }
+    } else if (dev.h === o.h) next.h = t.h;
+  }
+  else if (f === 'h' || f === 'u') next[f] = Math.max(1, Math.round(+raw) || 1);
+  else if (f in ints) next[f] = clamp(Math.round(+raw) || 0, ...ints[f]);
+  else if (['depth', 'length', 'offset'].includes(f)) next[f] = Math.max(f === 'offset' ? 0 : 5, fromDisp(+raw || 0));
+  else if (['watts', 'capacity', 'weight'].includes(f)) next[f] = Math.max(0, +raw || 0);
+  else if (['hostname', 'ip', 'serial', 'notes'].includes(f)) next[f] = String(raw).trim();
+  else if (f === 'half' || f === 'feed') { if (raw) next[f] = raw; else delete next[f]; }
+  else next[f] = raw;   // mount, side, connector types, color
+  const g = isZeroU(next) ? null : portGrid(next);
+  const lost = Object.keys(portUse()[id] || {}).filter(k => !validPort(next, k));
+  const err = conflict(rack, next)
+    || (g && !g.fits && `Those ports don't fit on ${next.h}U${isHalf(next) ? ' half width' : ''} (up to ${g.maxData} data ports${nOutlets(next) ? ` / ${g.maxOut} outlets` : ''})`)
+    || (isZeroU(next) && !zeroUFits(next) && 'Too many outlets for that length')
+    || (lost.length && `${portLabel(dev, lost[0])} has a cable. Remove it first`);
+  if (err) { toast(err); return renderProps(); }
+  mutate(() => { for (const k of Object.keys(dev)) if (!(k in next)) delete dev[k]; Object.assign(dev, next); });
+}
+function updateRack(id, f, raw) {
+  const r = doc.racks.find(r => r.id === id);
+  if (f === 'name') return mutate(() => (r.name = raw.trim() || 'Rack'));
+  if (f === 'code') return mutate(() => (r.code = raw.trim()));
+  if (f === 'channel') return mutate(() => (r.channel = raw));
+  if (f === 'maxLoad') return mutate(() => (r.maxLoad = Math.max(0, +raw || 0)));
+  if (f === 'units') {
+    const n = clamp(Math.round(+raw) || 1, 1, 100);
+    const over = r.devices.find(d => (isZeroU(d) ? (d.offset || 0) + (d.length || T_(d).len) > n * U_MM : d.u + d.h - 1 > n));
+    if (over) { toast(`“${over.name}” sits above U${n}. Move it first`); return renderProps(); }
+    return mutate(() => (r.units = n));
+  }
+  if (f === 'width') return mutate(() => (r.width = Math.max(PANEL_W + 20, fromDisp(+raw || 0))));
+  if (f === 'depth') return mutate(() => (r.depth = Math.max(2 * RAIL_INSET + 50, fromDisp(+raw || 0))));
+}
+function updateMulti(f, raw) {
+  const ids = [...ui.multi];
+  if (f === 'color') return mutate(() => ids.forEach(id => (findDev(id).dev.color = raw)));
+  if (f === 'rack' && raw) {
+    const to = doc.racks.find(r => r.id === raw);
+    let moved = 0, skipped = 0;
+    mutate(() => {
+      for (const f of ids.map(findDev).sort((a, b) => b.dev.u - a.dev.u)) {
+        if (f.rack === to) continue;
+        f.rack.devices.splice(f.rack.devices.indexOf(f.dev), 1);
+        const pos = isZeroU(f.dev) ? freeZeroU(to, f.dev) : (u => (u ? { u } : null))(nearestFree(to, f.dev, clamp(f.dev.u, 1, to.units)));
+        if (!pos) { f.rack.devices.push(f.dev); skipped++; continue; }
+        Object.assign(f.dev, pos); to.devices.push(f.dev); moved++;
+      }
+    });
+    toast(`Moved ${moved} to ${to.name}${skipped ? `, ${skipped} didn't fit` : ''}`);
+  }
+}
+propsEl.addEventListener('click', e => {
+  const tr = e.target.closest('tr[data-cid]');
+  if (tr) return select('cable', tr.dataset.cid);
+  const li = e.target.closest('.mlist li[data-id]');
+  if (li) return select('device', li.dataset.id);
+  const mact = e.target.closest('[data-mact]')?.dataset.mact;
+  if (mact) {
+    const ids = [...ui.multi];
+    if (mact === 'up' || mact === 'down') return shiftDevs(ids, mact === 'up' ? 1 : -1);
+    if (mact === 'dup') return duplicateSel();
+    if (mact === 'copy') return copySel();
+    if (mact === 'del') return deleteSel(true);
+    if (mact === 'resetColor') return mutate(() => ids.forEach(id => delete findDev(id).dev.color));
+    return;
+  }
+  const act = e.target.closest('[data-act]')?.dataset.act, s = ui.sel;
+  if (!act || !s) return;
+  if (act === 'resetColor') {
+    const o = s.kind === 'device' ? findDev(s.id)?.dev : doc.cables.find(c => c.id === s.id);
+    if (o) mutate(() => delete o.color);
+    return;
+  }
+  if (act === 'del') {
+    const btn = e.target.closest('[data-act]'), r = s.kind === 'rack' && doc.racks.find(r => r.id === s.id);
+    if (r && r.devices.length && !btn.dataset.armed) {
+      btn.dataset.armed = '1'; btn.classList.add('armed');
+      btn.textContent = `Confirm: delete rack + ${r.devices.length} device${r.devices.length > 1 ? 's' : ''}`;
+      return;
+    }
+    return deleteSel(true);
+  }
+  if (s.kind === 'device') {
+    if (act === 'up' || act === 'down') return shiftDevs([s.id], act === 'up' ? 1 : -1);
+    if (act === 'dup') return duplicateSel();
+    if (act === 'template') return saveTemplate(findDev(s.id).dev);
+  }
+  if (s.kind === 'rack') {
+    const i = doc.racks.findIndex(r => r.id === s.id), r = doc.racks[i];
+    if (act === 'left' && i > 0) mutate(() => doc.racks.splice(i - 1, 0, doc.racks.splice(i, 1)[0]));
+    if (act === 'right' && i < doc.racks.length - 1) mutate(() => doc.racks.splice(i + 1, 0, doc.racks.splice(i, 1)[0]));
+    if (act === 'dup') {
+      const copy = { ...JSON.parse(JSON.stringify(r)), id: uid(), name: r.name + ' copy', code: '' };
+      copy.devices.forEach(d => (d.id = uid()));
+      ui.sel = { kind: 'rack', id: copy.id };
+      mutate(() => doc.racks.splice(i + 1, 0, copy));
+    }
+  }
+});
+
+/* ---------- add-rack form ---------- */
+const rackForm = $('#addRackForm'), presetSel = $('#presetSel'), newRackBtn = $('#newRackBtn');
+const formMM = { width: 600, depth: 1000 };
+presetSel.innerHTML = RACK_PRESETS.map((p, i) => `<option value="${i}">${p.label}</option>`).join('');
+function nextRackName() {
+  for (let i = 0; i < 26; i++) {
+    const n = 'Rack ' + String.fromCharCode(65 + i);
+    if (!doc.racks.some(r => r.name === n)) return n;
+  }
+  return 'Rack ' + (doc.racks.length + 1);
+}
+function applyPreset() {
+  const p = RACK_PRESETS[+presetSel.value];
+  rackForm.units.value = p.units; formMM.width = p.width; formMM.depth = p.depth;
+  renderRackForm();
+}
+function renderRackForm() {
+  rackForm.width.value = toDisp(formMM.width);
+  rackForm.depth.value = toDisp(formMM.depth);
+  if (!rackForm.name.dataset.touched) rackForm.name.value = nextRackName();
+  document.querySelectorAll('.unit-lbl').forEach(el => (el.textContent = ui.unit));
+}
+function showRackForm(on) {
+  rackForm.hidden = !on;
+  newRackBtn.setAttribute('aria-expanded', on);
+  newRackBtn.textContent = on ? 'Close' : '+ New rack';
+  if (on) rackForm.name.focus();
+}
+presetSel.addEventListener('change', applyPreset);
+rackForm.name.addEventListener('input', () => (rackForm.name.dataset.touched = '1'));
+rackForm.width.addEventListener('change', () => (formMM.width = fromDisp(+rackForm.width.value || 0)));
+rackForm.depth.addEventListener('change', () => (formMM.depth = fromDisp(+rackForm.depth.value || 0)));
+rackForm.addEventListener('submit', e => {
+  e.preventDefault();
+  const r = makeRack({
+    name: rackForm.name.value.trim() || nextRackName(),
+    units: clamp(Math.round(+rackForm.units.value) || 42, 1, 100),
+    width: Math.max(PANEL_W + 20, formMM.width),
+    depth: Math.max(2 * RAIL_INSET + 50, formMM.depth),
+  });
+  delete rackForm.name.dataset.touched;
+  showRackForm(false);
+  ui.sel = { kind: 'rack', id: r.id }; ui.lastRack = r.id;
+  mutate(() => doc.racks.push(r));
+  if (ui.view === '2d') { fit(); draw2D(); }
+});
+newRackBtn.addEventListener('click', () => showRackForm(rackForm.hidden));
+$('#cancelRack').addEventListener('click', () => showRackForm(false));
+
+/* ---------- equipment list (with saved templates) ---------- */
+const paletteEl = $('#palette');
+function renderPalette() {
+  const tpls = doc.settings.templates;
+  const item = (type, label, h, cat, extra = '', style = '') =>
+    `<button class="pal" draggable="true" data-type="${type}" ${extra} title="Add ${esc(label)}, or drag it onto a rack">`
+    + `<span class="sw k-${cat}"${style}></span><span class="grow">${esc(label)}</span><span class="muted">${h}</span>`
+    + `<svg class="ic add"><use href="#i-plus"/></svg></button>`;
+  let h = '';
+  if (tpls.length) {
+    h += '<div class="pal-group"><div class="pal-head">My templates</div>' + tpls.map(t => {
+      const tt = TYPES[t.type] || TYPES.custom;
+      return `<div class="pal-tpl">${item(t.type + ':' + t.id, t.name, tt.zeroU ? '0U' : (t.fields.h || tt.h) + 'U', tt.cat, `data-tpl="${t.id}"`, t.fields.color ? ` style="--c:${t.fields.color}"` : '')}`
+        + `<button class="ib tpl-del" data-del-tpl="${t.id}" title="Remove template" aria-label="Remove template"><svg class="ic"><use href="#i-close"/></svg></button></div>`;
+    }).join('') + '</div>';
+  }
+  h += CATS.map(([cat, label]) => {
+    const items = Object.entries(TYPES).filter(([, t]) => t.cat === cat);
+    return `<div class="pal-group"><div class="pal-head">${label}</div>` + items.map(([k, t]) => item(k, t.label, t.zeroU ? '0U' : t.h + 'U', cat)).join('') + '</div>';
+  }).join('');
+  paletteEl.innerHTML = h;
+}
+paletteEl.addEventListener('click', e => {
+  const del = e.target.closest('[data-del-tpl]');
+  if (del) return mutate(() => (doc.settings.templates = doc.settings.templates.filter(t => t.id !== del.dataset.delTpl)));
+  const b = e.target.closest('[data-type]');
+  if (!b) return;
+  const tpl = b.dataset.tpl && doc.settings.templates.find(t => t.id === b.dataset.tpl);
+  if (tpl) return addDevice(tpl.type, targetRack(), null, { ...tpl.fields, name: tpl.name });
+  addDevice(b.dataset.type, targetRack(), null, TYPES[b.dataset.type].zeroU ? {} : { mount: ui.view === '2d' ? ui.face : 'front' });
+});
+paletteEl.addEventListener('dragstart', e => {
+  const b = e.target.closest('[data-type]');
+  if (b) { e.dataTransfer.setData('text/x-rack-type', b.dataset.type); e.dataTransfer.effectAllowed = 'copy'; }
+});
+
+/* ---------- converter ---------- */
+const CV = { U: U_MM, mm: 1, cm: 10, in: IN_MM };
+let cvMM = U_MM;
+const cvInputs = [...document.querySelectorAll('[data-cv]')];
+function renderConverter(except) {
+  for (const inp of cvInputs) if (inp.dataset.cv !== except) inp.value = num(cvMM / CV[inp.dataset.cv], 4);
+  drawConvRuler();
+}
+cvInputs.forEach(inp => inp.addEventListener('input', () => {
+  const v = parseFloat(inp.value);
+  if (!isFinite(v) || v < 0) return;
+  cvMM = v * CV[inp.dataset.cv];
+  renderConverter(inp.dataset.cv);
+}));
+function drawConvRuler() {
+  const W = 260, X = 10, range = Math.max(cvMM * 1.15, 4 * U_MM), sc = W / range, u = ui.unit;
+  let s = '';
+  const nU = Math.floor(range / U_MM), uStep = Math.ceil(nU / 10);
+  for (let i = 0; i <= nU; i++) {
+    const x = X + i * U_MM * sc;
+    s += `<line x1="${x}" x2="${x}" y1="${i % uStep ? 22 : 18}" y2="28"/>`;
+    if (i % uStep === 0) s += `<text x="${x}" y="13">${i}U</text>`;
+  }
+  s += `<rect class="bar-fill" x="${X}" y="30" width="${Math.max(0, cvMM * sc)}" height="10"/>`;
+  const steps = u === 'in' ? [IN_MM / 8, IN_MM / 4, IN_MM / 2, IN_MM, 6 * IN_MM, 12 * IN_MM, 60 * IN_MM] : [1, 5, 10, 50, 100, 500, 1000, 5000];
+  const tick = steps.find(t => range / t <= 60) || steps[steps.length - 1];
+  const lab = steps.find(t => t >= tick && range / t <= 6 && Math.abs(t / tick - Math.round(t / tick)) < 1e-6) || tick * 10;
+  for (let i = 0; i * tick <= range + 1e-6; i++) {
+    const v = i * tick, x = X + v * sc, isLab = Math.abs(v / lab - Math.round(v / lab)) < 1e-6;
+    s += `<line x1="${x}" x2="${x}" y1="42" y2="${isLab ? 52 : 47}"/>`;
+    if (isLab) s += `<text x="${x}" y="64">${num(v / UNIT_MM[u], 2)}${i === 0 ? '' : ' ' + u}</text>`;
+  }
+  s += `<line class="mark" x1="${X + cvMM * sc}" x2="${X + cvMM * sc}" y1="16" y2="54"/>`;
+  $('#cvRuler').innerHTML = s;
+}
+
+/* ---------- colors & cable types editor ---------- */
+const styleEl = $('#styleEditor'), cableTypeSel = $('#cableType'), unitSel = $('#unitSel');
+function renderStyleEditor() {
+  const used = {};
+  doc.cables.forEach(c => (used[c.type] = (used[c.type] || 0) + 1));
+  const rows = kind => doc.settings.cableTypes.filter(t => t.kind === kind).map(t => `<div class="trow" data-ct="${t.id}">
+      <input type="color" data-ct-f="color" value="${t.color}" title="Color">
+      <input data-ct-f="name" value="${esc(t.name)}" title="Name">
+      <span class="muted" title="Cables of this type">${used[t.id] || 0}</span>
+      <button class="icon" data-ct-act="del" title="Remove type">×</button></div>`).join('');
+  styleEl.innerHTML = '<div class="sub">Data cable types</div>' + rows('data')
+    + '<button class="small" data-ct-act="add" data-kind="data">+ Add data cable type</button>'
+    + '<div class="sub">Power cable types</div>' + rows('power')
+    + '<button class="small" data-ct-act="add" data-kind="power">+ Add power cable type</button>'
+    + '<div class="sub">Equipment colors</div>'
+    + CATS.map(([k, label]) => `<div class="trow"><input type="color" data-cat="${k}" value="${cssVar('--k-' + k)}"><span>${label}</span><span class="muted">${Object.values(TYPES).filter(t => t.cat === k).map(t => t.label).join(', ')}</span></div>`).join('')
+    + '<button class="small" data-ct-act="resetCats">Reset equipment colors</button>';
+  if (!doc.settings.cableTypes.some(t => t.id === ui.cableType)) ui.cableType = doc.settings.cableTypes[0].id;
+  cableTypeSel.innerHTML = cableTypeOptions(ui.cableType);
+  cableTypeSel.style.borderLeftColor = ctype(ui.cableType).color;
+}
+styleEl.addEventListener('change', e => {
+  const el = e.target, row = el.closest('[data-ct]');
+  if (row && el.dataset.ctF) {
+    const t = doc.settings.cableTypes.find(t => t.id === row.dataset.ct);
+    const v = el.dataset.ctF === 'name' ? el.value.trim() || t.name : el.value;
+    mutate(() => (t[el.dataset.ctF] = v));
+  } else if (el.dataset.cat) {
+    mutate(() => (doc.settings.catColors[el.dataset.cat] = el.value));
+  }
+});
+styleEl.addEventListener('click', e => {
+  const btn = e.target.closest('[data-ct-act]'), act = btn?.dataset.ctAct;
+  if (!act) return;
+  const types = doc.settings.cableTypes;
+  if (act === 'add') {
+    const kind = btn.dataset.kind, t = { id: uid(), name: kind === 'power' ? 'New power cable' : 'New cable', color: NEW_TYPE_COLORS[types.length % NEW_TYPE_COLORS.length], kind };
+    mutate(() => types.push(t));
+    styleEl.querySelector(`[data-ct="${t.id}"] [data-ct-f="name"]`)?.select();
+  } else if (act === 'del') {
+    const id = e.target.closest('[data-ct]').dataset.ct, t = types.find(t => t.id === id);
+    const n = doc.cables.filter(c => c.type === id).length;
+    if (n) return toast(`${n} cable${n > 1 ? 's use' : ' uses'} “${t.name}”. Change ${n > 1 ? 'them' : 'it'} first`);
+    if (types.filter(x => x.kind === t.kind).length === 1) return toast(`Keep at least one ${t.kind} cable type`);
+    mutate(() => types.splice(types.indexOf(t), 1));
+  } else if (act === 'resetCats') {
+    mutate(() => (doc.settings.catColors = {}));
+  }
+});
+
+/* ---------- search ---------- */
+const searchIn = $('#searchIn'), searchRes = $('#searchRes');
+let searchHits = [], searchActive = 0;
+function searchItems(q) {
+  q = q.trim().toLowerCase();
+  if (!q) return [];
+  const res = [];
+  for (const r of doc.racks) {
+    if (r.name.toLowerCase().includes(q)) res.push({ kind: 'rack', id: r.id, title: r.name, sub: `${r.units}U rack` });
+    for (const d of r.devices) {
+      const hay = [d.name, d.hostname, d.ip, d.serial, d.notes, T_(d).label].filter(Boolean).join(' ').toLowerCase();
+      if (hay.includes(q)) res.push({ kind: 'device', id: d.id, title: d.name, sub: [r.name, isZeroU(d) ? '0U' : 'U' + d.u, d.hostname, d.ip].filter(Boolean).join(' · ') });
+    }
+  }
+  for (const c of doc.cables) {
+    const hay = [cableLabel(c), c.notes, ctype(c.type).name].filter(Boolean).join(' ').toLowerCase();
+    if (hay.includes(q)) res.push({ kind: 'cable', id: c.id, title: cableLabel(c), sub: ctype(c.type).name });
+  }
+  return res.slice(0, 14);
+}
+function renderSearch() {
+  searchHits = searchItems(searchIn.value);
+  searchActive = clamp(searchActive, 0, Math.max(0, searchHits.length - 1));
+  searchRes.hidden = !searchIn.value.trim();
+  searchRes.innerHTML = searchHits.length ? searchHits.map((h, i) => `<button class="sr${i === searchActive ? ' on' : ''}" data-i="${i}"><span class="tag">${h.kind}</span><span class="grow"><span class="ci-main">${esc(h.title)}</span><span class="ci-sub">${esc(h.sub)}</span></span></button>`).join('')
+    : '<div class="empty">No matches</div>';
+}
+/* select something and bring it into view */
+function focusItem(item) {
+  select(item.kind, item.id);
+  if (ui.view !== '2d') return;
+  const L = layout();
+  let b = null;
+  if (item.kind === 'device') {
+    const f = findDev(item.id);
+    if (f.dev.mount !== ui.face) setFace(f.dev.mount);
+    b = devRect(L, f.rack, f.dev);
+  } else if (item.kind === 'rack') {
+    const R = L.racks[item.id];
+    b = { x: R.x, y: R.top, w: R.w, h: R.h };
+  } else if (item.kind === 'cable') {
+    const c = doc.cables.find(c => c.id === item.id), port = portMap(L), a = port(c.a, c.id, c.pa), e = port(c.b, c.id, c.pb);
+    if (a.side !== ui.face && e.side !== ui.face) setFace(a.side);
+    b = { x: Math.min(a.x, e.x), y: Math.min(a.y, e.y), w: Math.abs(a.x - e.x), h: Math.abs(a.y - e.y) };
+  }
+  if (b) { centerOn({ ...b, x: ui.face === 'rear' ? L.w - b.x - b.w : b.x }); draw2D(); }
+}
+searchIn.addEventListener('input', () => { searchActive = 0; renderSearch(); });
+searchIn.addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); searchActive += e.key === 'ArrowDown' ? 1 : -1; renderSearch(); }
+  else if (e.key === 'Enter' && searchHits[searchActive]) { focusItem(searchHits[searchActive]); searchRes.hidden = true; searchIn.blur(); }
+  else if (e.key === 'Escape') { searchIn.value = ''; searchRes.hidden = true; searchIn.blur(); }
+});
+searchIn.addEventListener('focus', () => searchIn.value.trim() && renderSearch());
+searchRes.addEventListener('mousedown', e => {
+  const b = e.target.closest('[data-i]');
+  if (!b) return;
+  e.preventDefault();
+  focusItem(searchHits[+b.dataset.i]);
+  searchRes.hidden = true;
+  searchIn.blur();
+});
+searchIn.addEventListener('blur', () => setTimeout(() => (searchRes.hidden = true), 120));
+
+/* ================= toolbar ================= */
+$('#viewSeg').addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (b) setView(b.dataset.view); });
+$('#faceSeg').addEventListener('click', e => { const b = e.target.closest('[data-face]'); if (b) setFace(b.dataset.face); });
+$('#modeSeg').addEventListener('click', e => { const b = e.target.closest('[data-mode]'); if (b) setMode(b.dataset.mode); });
+cableTypeSel.addEventListener('change', () => { ui.cableType = cableTypeSel.value; renderStyleEditor(); hud(); });
+$('#routeSeg').addEventListener('click', e => {
+  const b = e.target.closest('[data-route]');
+  if (b) { doc.settings.route = b.dataset.route; save(); if (!ui.userMoved) fit(); renderAll(); }
+});
+$('#tidyBtn').addEventListener('click', () => {
+  const t0 = performance.now(), res = optimizeRoutes();
+  if (res.after >= res.before && doc.routeOrder) return toast(`Already tidy: ${res.before} crossing${res.before === 1 ? '' : 's'}`);
+  mutate(() => (doc.routeOrder = res.orders));
+  toast(`Tidied: ${res.before} → ${res.after} crossing${res.after === 1 ? '' : 's'} (${Math.round(performance.now() - t0)} ms)`);
+});
+unitSel.value = ui.unit;
+unitSel.addEventListener('change', () => { doc.settings.unit = unitSel.value; save(); renderAll(); });
+$('#fitBtn').addEventListener('click', () => { if (ui.view === '3d' && T.ready) frame3D(); else { fit(); draw2D(); } });
+$('#zoomIn').addEventListener('click', () => zoomBy(1.25));
+$('#zoomOut').addEventListener('click', () => zoomBy(0.8));
+$('#undoBtn').addEventListener('click', undo);
+$('#redoBtn').addEventListener('click', redo);
+
+/* file menu */
+const fileBtn = $('#fileBtn'), fileMenu = $('#fileMenu');
+function showMenu(on) { fileMenu.hidden = !on; fileBtn.setAttribute('aria-expanded', on); }
+fileBtn.addEventListener('click', e => { e.stopPropagation(); showMenu(fileMenu.hidden); });
+document.addEventListener('click', e => { if (!fileMenu.hidden && !e.target.closest('.menu-wrap')) showMenu(false); });
+fileMenu.addEventListener('click', e => { if (e.target.closest('[data-closes]')) showMenu(false); });
+$('#exportBtn').addEventListener('click', () => download(new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' }), 'rack-layout.json'));
+$('#drawingBtn').addEventListener('click', openExport);
+$('#csvBtn').addEventListener('click', exportCSV);
+const importFile = $('#importFile');
+$('#importBtn').addEventListener('click', () => importFile.click());
+importFile.addEventListener('change', async () => {
+  const file = importFile.files[0]; importFile.value = '';
+  if (!file) return;
+  try {
+    const d = JSON.parse(await file.text());
+    if (!validDoc(d)) throw new Error('bad file');
+    ui.sel = null; ui.multi.clear();
+    mutate(() => { doc = normalize(d); ensurePorts(); });
+    unitSel.value = ui.unit; fit(); renderAll();
+    if (T.ready) frame3D();
+  } catch { toast('That file is not a rack layout'); }
+});
+$('#newBtn').addEventListener('click', e => {
+  e.stopPropagation();
+  const btn = e.currentTarget, lbl = btn.querySelector('span');
+  const reset = () => { delete btn.dataset.armed; btn.classList.remove('armed'); lbl.textContent = 'New empty layout'; };
+  if (!btn.dataset.armed) {
+    btn.dataset.armed = '1'; btn.classList.add('armed'); lbl.textContent = 'Click again to clear everything';
+    setTimeout(reset, 3000);
+    return;
+  }
+  reset();
+  showMenu(false);
+  ui.sel = null; ui.multi.clear(); ui.pending = null; ui.measure = null;
+  mutate(() => { const s = doc.settings; doc = blankDoc(); doc.settings = s; });
+  fit(); renderAll();
+});
+
+/* theme: auto -> light -> dark */
+const themeBtn = $('#themeBtn');
+let theme = 'auto';
+try { theme = localStorage.getItem('rackviz.theme') || 'auto'; } catch (e) { /* ignore */ }
+function applyTheme() {
+  if (theme === 'auto') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+  themeBtn.querySelector('use').setAttribute('href', '#i-' + { auto: 'auto', light: 'sun', dark: 'moon' }[theme]);
+  themeBtn.title = `Theme: ${theme === 'auto' ? 'match system' : theme} (click to change)`;
+}
+themeBtn.addEventListener('click', () => {
+  theme = { auto: 'light', light: 'dark', dark: 'auto' }[theme];
+  try { localStorage.setItem('rackviz.theme', theme); } catch (e) { /* ignore */ }
+  applyTheme();
+  renderAll();
+  toast(`Theme: ${theme === 'auto' ? 'match system' : theme}`);
+});
+applyTheme();
+
+/* help */
+const helpDlg = $('#helpDlg');
+$('#helpBtn').addEventListener('click', () => helpDlg.showModal());
+helpDlg.addEventListener('click', e => { if (e.target === helpDlg || e.target.closest('[data-close]')) helpDlg.close(); });
+
+/* empty state */
+$('#emptyAdd').addEventListener('click', () => {
+  const r = makeRack({ name: nextRackName(), units: 42, width: 600, depth: 1000 });
+  ui.sel = { kind: 'rack', id: r.id }; ui.lastRack = r.id;
+  mutate(() => doc.racks.push(r));
+  fit(); draw2D();
+});
+
+/* collapsible sidebar sections remember their state */
+for (const d of document.querySelectorAll('details.sec')) {
+  try { const v = localStorage.getItem('rackviz.open.' + d.dataset.key); if (v != null) d.open = v === '1'; } catch (e) { /* ignore */ }
+  d.addEventListener('toggle', () => { try { localStorage.setItem('rackviz.open.' + d.dataset.key, d.open ? '1' : '0'); } catch (e) { /* ignore */ } });
+}
+
+/* ================= keyboard ================= */
+document.addEventListener('keydown', e => {
+  const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName);
+  const key = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;
+  if (mod && key === 'k') { e.preventDefault(); return searchIn.focus(); }
+  if (typing) return;
+  if (mod && (key === 'y' || (key === 'z' && e.shiftKey))) { e.preventDefault(); return redo(); }
+  if (mod && key === 'z') { e.preventDefault(); return undo(); }
+  if (mod && key === 'c') { e.preventDefault(); return copySel(); }
+  if (mod && key === 'v') { e.preventDefault(); return pasteClip(); }
+  if (mod && key === 'd') { e.preventDefault(); return duplicateSel(); }
+  if (e.key === 'Escape' && !fileMenu.hidden) return showMenu(false);
+  if (mod || e.altKey) return;
+  if (e.key === 'Escape') {
+    if (ui.rewire) { cancelRewire(); return renderAll(); }
+    ui.pending = null; ui.measure = null; ui.marquee = null; ui.sel = null; ui.multi.clear(); renderAll();
+  }
+  else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSel(); }
+  else if (key === 'v') setMode('select');
+  else if (key === 'c') setMode('connect');
+  else if (key === 'm') setMode('measure');
+  else if (key === 'r' && ui.view === '2d') setFace(ui.face === 'front' ? 'rear' : 'front');
+  else if (key === 'f') $('#fitBtn').click();
+  else if (e.key === '/') { e.preventDefault(); searchIn.focus(); }
+  else if (e.key === '+' || e.key === '=') zoomBy(1.25);
+  else if (e.key === '-' || e.key === '_') zoomBy(0.8);
+  else if (e.key === '?') helpDlg.showModal();
+  else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && selectedDevIds().length) {
+    e.preventDefault();
+    shiftDevs(selectedDevIds(), e.key === 'ArrowUp' ? 1 : -1);
+  }
+});
+
+/* ================= render ================= */
+function renderStage() {
+  if (ui.view === '2d') draw2D(); else build3D();
+  hud();
+}
+function renderAll() {
+  for (const id of [...ui.multi]) if (!findDev(id)) ui.multi.delete(id);
+  if (ui.multi.size === 1) { ui.sel = { kind: 'device', id: [...ui.multi][0] }; ui.multi.clear(); }
+  if (ui.sel) {
+    const ok = ui.sel.kind === 'device' ? findDev(ui.sel.id)
+      : ui.sel.kind === 'rack' ? doc.racks.some(r => r.id === ui.sel.id)
+      : doc.cables.some(c => c.id === ui.sel.id);
+    if (!ok) ui.sel = null;
+  }
+  if (ui.pending && !findDev(ui.pending)) ui.pending = null;
+  ui.power = powerModel();
+  applyCatColors();
+  syncToolbar();
+  renderStyleEditor();
+  renderPalette();
+  renderRackList();
+  renderProps();
+  renderCableList();
+  renderPowerPanel();
+  renderRackForm();
+  drawConvRuler();
+  renderLegend();
+  $('#empty').hidden = doc.racks.length > 0;
+  if (!doc.racks.length && rackForm.hidden === false) showRackForm(false);
+  $('#undoBtn').disabled = !undoStack.length;
+  $('#redoBtn').disabled = !redoStack.length;
+  renderStage();
+}
+function renderLegend() {
+  const n = {};
+  doc.cables.forEach(c => (n[c.type] = (n[c.type] || 0) + 1));
+  const el = $('#legend'), types = doc.settings.cableTypes.filter(t => n[t.id]);
+  el.hidden = !types.length;
+  el.innerHTML = types.map(t => `<span><i class="sw line${t.kind === 'power' ? ' thick' : ''}" style="--c:${t.color}"></i>${esc(t.name)} <span class="muted">${n[t.id]}</span></span>`).join('');
+}
+
+new ResizeObserver(() => {
+  if (!ui.userMoved) fit();
+  if (ui.view === '2d') draw2D();
+}).observe(stage);
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderAll);
+
+ensurePorts();
+save();
+applyPreset();
+renderConverter();
+renderAll();

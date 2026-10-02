@@ -342,6 +342,7 @@ const nUplinks = d => hasUplinks(d) ? (d.uplinks ?? TYPES[d.type].ul) : 0;
 const upType = d => d.uplinkType ?? TYPES[d.type].ut ?? 'sfp+';
 const validPort = (d, k) => k[0] === 'p' ? +k.slice(1) <= nPorts(d) : +k.slice(1) <= nUplinks(d);
 const fmtPort = k => !k ? '' : k[0] === 'p' ? ' #' + k.slice(1) : ' UL' + k.slice(1);
+const portName = k => (k[0] === 'p' ? 'port ' : 'uplink ') + k.slice(1);
 const clip = (t, n) => t.length > n ? t.slice(0, n - 1) + '…' : t;
 
 const PORT = 12, PITCH = 14, PORTS_X = 92, PORTS_PAD = 8;  // mm: port square, spacing, start, right margin
@@ -619,24 +620,39 @@ function draw2D() {
       s += `<text class="dev-label" x="${b.x + 16}" y="${b.y + b.h / 2}">${esc(pl ? clip(d.name, 14) : d.name)}</text>`;
       if (!pl) s += `<text class="dev-meta" x="${b.x + b.w - 12}" y="${b.y + b.h / 2}">${d.h}U${d.mount === 'rear' ? ' · rear' : ''}</text>`;
       if (pl) for (const p of pl) {
-        const c = used[d.id]?.[p.key];
-        s += `<rect class="pt${p.up ? ' up' : ''}"${c ? ` style="fill:${cableColor(c)};stroke:${cableColor(c)}"` : ''} data-port="${p.key}" x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}"><title>${p.up ? 'Uplink ' + p.key.slice(1) + ' · ' + UPLINK_TYPES[upType(d)] : 'Port ' + p.key.slice(1)}${c ? ' · in use' : ''}</title></rect>`;
+        const c = used[d.id]?.[p.key], rt = ui.rewire?.target;
+        const drop = rt && rt.dev === d.id && rt.key === p.key ? (rt.err ? ' drop-bad' : ' drop-ok') : '';
+        s += `<rect class="pt${p.up ? ' up' : ''}${c ? ' used' : ''}${drop}"${c && !drop ? ` style="fill:${cableColor(c)};stroke:${cableColor(c)}"` : ''} data-port="${p.key}" x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}"><title>${p.up ? 'Uplink ' + p.key.slice(1) + ' · ' + UPLINK_TYPES[upType(d)] : 'Port ' + p.key.slice(1)}${c ? ' · in use, drag to move the cable' : ''}</title></rect>`;
       }
       s += '</g>';
     }
   }
 
   const routes = doc.settings.route === 'ortho' ? diagramRoutes(L, port) : null;
+  const bez = q => `M${q[0].x},${q[0].y} C${q[1].x},${q[1].y} ${q[2].x},${q[2].y} ${q[3].x},${q[3].y}`;
+  let handles = '';
   for (const c of doc.cables) {
     const a = port(c.a, c.id, c.pa), b = port(c.b, c.id, c.pb);
     if (!a || !b) continue;
-    const p = cableCurve(a, b), col = cableColor(c);
-    const d = routes ? roundedPath(routes[c.id], 10) : `M${p[0].x},${p[0].y} C${p[1].x},${p[1].y} ${p[2].x},${p[2].y} ${p[3].x},${p[3].y}`;
+    const col = cableColor(c), moving = ui.rewire?.moved && ui.rewire.cid === c.id;
+    const d = routes ? roundedPath(routes[c.id], 10) : bez(cableCurve(a, b));
     const back = a.mount === 'rear' || b.mount === 'rear';
     s += `<g data-cable="${c.id}"><path class="cable-hit" d="${d}"/>`;
-    s += `<path class="cable${back ? ' back' : ''}${isSel('cable', c.id) ? ' sel' : ''}" style="stroke:${col}" d="${d}"/>`;
+    s += `<path class="cable${back ? ' back' : ''}${isSel('cable', c.id) ? ' sel' : ''}${moving ? ' ghosted' : ''}" style="stroke:${col}" d="${d}"/>`;
     s += `<circle class="port" style="fill:${col}" cx="${a.x}" cy="${a.y}" r="6"/><circle class="port" style="fill:${col}" cx="${b.x}" cy="${b.y}" r="6"/></g>`;
+    if (moving) {
+      // preview: the dragged end follows the pointer, or snaps to a valid port under it
+      const end = ui.rewire.end, t = ui.rewire.target, f = t && !t.err && findDev(t.dev);
+      const tp = f && portLayout(L, f.rack, f.dev)?.find(q => q.key === t.key);
+      const m = tp ? { x: tp.x + tp.w / 2, y: tp.y + tp.h / 2 } : ui.hover || (end === 'a' ? a : b);
+      s += `<path class="cable preview" style="stroke:${col}" d="${bez(end === 'a' ? cableCurve(m, b) : cableCurve(a, m))}"/>`;
+    } else if (isSel('cable', c.id) && ui.mode === 'select') {
+      const r = 7 / k;
+      handles += `<circle class="end-handle" data-end="a" data-cid="${c.id}" cx="${a.x}" cy="${a.y}" r="${r}"><title>Drag to move this end to another port</title></circle>`;
+      handles += `<circle class="end-handle" data-end="b" data-cid="${c.id}" cx="${b.x}" cy="${b.y}" r="${r}"><title>Drag to move this end to another port</title></circle>`;
+    }
   }
+  s += handles;
 
   // overlays
   if (ui.pending && ui.hover) {
@@ -655,7 +671,7 @@ function draw2D() {
       s += `<text class="ghost-lbl" x="${b.x + b.w + 22}" y="${b.y + b.h / 2}" style="font-size:${12 / k}px;dominant-baseline:central">U${t.u}${f.dev.h > 1 ? '–' + (t.u + f.dev.h - 1) : ''}</text>`;
     }
   }
-  if (ui.mode === 'select' && ui.hover && !ui.drag && !ui.pan) {
+  if (ui.mode === 'select' && ui.hover && !ui.drag && !ui.pan && !ui.rewire) {
     s += `<line class="hover-line" x1="-120" x2="${L.w + 120}" y1="${ui.hover.y}" y2="${ui.hover.y}"/>`;
   }
   if (ui.measure) {
@@ -692,6 +708,10 @@ function hud() {
       const { a, b } = ui.measure, dy = Math.abs(b.y - a.y), dx = Math.abs(b.x - a.x);
       t = `↕ ${fmt(dy, 'cm')} · ${fmt(dy, 'in')} · ${fmtU(dy)}   ↔ ${fmt(dx, 'cm')} · ${fmt(dx, 'in')}   ⤢ ${fmt(Math.hypot(dx, dy))}`;
     } else t = 'Drag anywhere to measure';
+  } else if (ui.rewire?.moved) {
+    const rt = ui.rewire.target;
+    t = !rt ? 'Drop the cable end on a free port · Esc to cancel'
+      : rt.err || `→ ${findDev(rt.dev).dev.name} ${portName(rt.key)} · release to move the cable here`;
   } else if (ui.drag?.moved && ui.drag.target) {
     const tg = ui.drag.target, r = doc.racks.find(r => r.id === tg.rackId);
     t = tg.err ? tg.err : `→ ${r.name} · U${tg.u}`;
@@ -729,7 +749,7 @@ svg.addEventListener('pointerdown', e => {
   if (e.pointerType === 'touch') {
     touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (touches.size === 2) {
-      ui.drag = null; ui.pan = null;
+      ui.drag = null; ui.pan = null; cancelRewire();
       if (ui.measure?.active) ui.measure = null;
       pinch = { ...touchInfo(), cam: { ...ui.cam } };
       capture(e);
@@ -751,6 +771,19 @@ svg.addEventListener('pointerdown', e => {
     if (devEl) connectClick(devEl.dataset.dev, e.target.closest('[data-port]')?.dataset.port || '');
     else if (ui.pending) { ui.pending = null; renderAll(); }
     else startPan();
+    return;
+  }
+  // grab a cable end: a handle on the selected cable, or a plugged-in port
+  const endEl = e.target.closest('[data-end]'), usedPt = e.target.closest('.pt.used');
+  let grab = endEl && { cid: endEl.dataset.cid, end: endEl.dataset.end };
+  if (!grab && usedPt && devEl) {
+    const dev = devEl.dataset.dev, key = usedPt.dataset.port, c = portUse()[dev]?.[key];
+    if (c) grab = { cid: c.id, end: c.a === dev && c.pa === key ? 'a' : 'b' };
+  }
+  if (grab) {
+    ui.rewire = { ...grab, sx: e.clientX, sy: e.clientY, moved: false, target: null };
+    stage.classList.add('rewiring');
+    capture(e);
     return;
   }
   if (devEl) {
@@ -780,6 +813,10 @@ svg.addEventListener('pointermove', e => {
     ui.cam.x = ui.pan.cx + e.clientX - ui.pan.sx;
     ui.cam.y = ui.pan.cy + e.clientY - ui.pan.sy;
     ui.userMoved = true;
+  } else if (ui.rewire) {
+    if (!ui.rewire.moved && Math.hypot(e.clientX - ui.rewire.sx, e.clientY - ui.rewire.sy) < 4) return;
+    ui.rewire.moved = true;
+    ui.rewire.target = rewireTarget(e);
   } else if (ui.drag) {
     if (!ui.drag.moved && Math.hypot(e.clientX - ui.drag.sx, e.clientY - ui.drag.sy) < 4) return;
     ui.drag.moved = true;
@@ -792,9 +829,37 @@ svg.addEventListener('pointermove', e => {
   }
   schedule();
 });
+/* moving a cable end to another port */
+function rewireTarget(e) {
+  const el = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-port]');
+  if (!el) return null;
+  const dev = el.closest('[data-dev]').dataset.dev, key = el.dataset.port, { cid, end } = ui.rewire;
+  const c = doc.cables.find(c => c.id === cid), busy = portUse()[dev]?.[key];
+  const err = dev === (end === 'a' ? c.b : c.a) ? 'A cable needs two different devices'
+    : busy && busy !== c ? `${findDev(dev).dev.name} ${portName(key)} is already in use` : null;
+  return { dev, key, err };
+}
+function cancelRewire() {
+  ui.rewire = null;
+  stage.classList.remove('rewiring');
+}
+function finishRewire() {
+  const r = ui.rewire;
+  cancelRewire();
+  if (!r.moved) return select('cable', r.cid);
+  const t = r.target, c = doc.cables.find(c => c.id === r.cid);
+  if (t?.err) toast(t.err);
+  else if (t && c && !(c[r.end] === t.dev && c['p' + r.end] === t.key)) {
+    ui.sel = { kind: 'cable', id: c.id };
+    mutate(() => { c[r.end] = t.dev; c['p' + r.end] = t.key; });
+    return toast(`Moved to ${findDev(t.dev).dev.name} ${portName(t.key)}`);
+  }
+  renderAll();
+}
 function endPointer(e) {
   touches.delete(e?.pointerId);
   if (pinch) { if (touches.size < 2) pinch = null; ui.pan = null; return; }
+  if (ui.rewire) return finishRewire();
   if (ui.drag) {
     const d = ui.drag; ui.drag = null;
     if (d.moved && d.target) {
@@ -808,7 +873,7 @@ function endPointer(e) {
 }
 svg.addEventListener('pointerup', endPointer);
 svg.addEventListener('pointercancel', endPointer);
-svg.addEventListener('pointerleave', () => { if (!ui.drag && !ui.pan) { ui.hover = null; schedule(); } });
+svg.addEventListener('pointerleave', () => { if (!ui.drag && !ui.pan && !ui.rewire) { ui.hover = null; schedule(); } });
 function zoomAt(mx, my, factor) {
   const k = ui.cam.k, k2 = clamp(k * factor, 0.03, 8);
   ui.cam.x = mx - (mx - ui.cam.x) * k2 / k;
@@ -1103,7 +1168,7 @@ function renderProps() {
       <label>To<select data-f="b">${deviceOptions(c.b)}</select></label>
       <label>To port<select data-f="pb">${portOptions(c.b, c.pb, c.id)}</select></label>
       <dl class="kv"><dt>Estimated length</dt><dd>≈ ${fmtLong(len)} · ${fmt(len, 'in')}</dd></dl>
-      <p class="hint">Estimate from the drawn route + 10 % slack.</p>
+      <p class="hint">Estimate from the drawn route + 10 % slack.<br>Tip: drag either end of the cable in the 2D view to plug it into another port.</p>
       <div class="row"><button data-act="del" class="danger">Delete</button></div>
     </div>`;
   } else {
@@ -1479,7 +1544,10 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !fileMenu.hidden) return showMenu(false);
   if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key.toLowerCase();
-  if (e.key === 'Escape') { ui.pending = null; ui.measure = null; ui.sel = null; renderAll(); }
+  if (e.key === 'Escape') {
+    if (ui.rewire) { cancelRewire(); return renderAll(); }
+    ui.pending = null; ui.measure = null; ui.sel = null; renderAll();
+  }
   else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSel(); }
   else if (k === 'v') setMode('select');
   else if (k === 'c') setMode('connect');

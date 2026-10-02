@@ -289,6 +289,16 @@ kbd {
 #stage[data-mode="connect"] .pt { cursor: pointer; }
 #stage[data-mode="connect"] .pt:hover { fill: var(--accent); stroke: var(--accent); }
 #stage[data-mode="connect"] .dev { cursor: default; }
+/* moving cable ends */
+#stage[data-mode="select"] .pt.used { cursor: grab; }
+#stage.rewiring, #stage.rewiring * { cursor: grabbing !important; }
+#stage.rewiring .cable-hit, #stage.rewiring .end-handle { pointer-events: none; }
+.pt.drop-ok { fill: var(--accent); stroke: var(--accent); stroke-width: 2; }
+.pt.drop-bad { fill: var(--bad); stroke: var(--bad); stroke-width: 2; }
+.cable.ghosted { opacity: .2; }
+.cable.preview { stroke-dasharray: 6 4; stroke-width: 2.6; }
+.end-handle { fill: var(--panel); stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; cursor: grab; }
+.end-handle:hover { fill: var(--accent); }
 .ghost { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
 .ghost.bad { fill: none; stroke: var(--bad); }
 .ruler line { stroke: var(--muted); stroke-width: 1; vector-effect: non-scaling-stroke; }

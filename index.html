@@ -4,39 +4,87 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Rack Visualizer</title>
-<link rel="stylesheet" href="style.css">
+<meta name="description" content="Plan the space networking equipment takes up in racks: rack units, ports, cables, 2D and 3D views.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232563eb' stroke-width='2' stroke-linecap='round'%3E%3Crect x='5' y='3' width='14' height='18' rx='2'/%3E%3Cpath d='M8 8h8M8 12h8M8 16h8'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-rack" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h8"/></symbol>
+    <symbol id="i-cursor" viewBox="0 0 24 24"><path d="M5 3l13 7.5-5.5 1.5L10 18z"/><path d="M12.5 12l4.5 6"/></symbol>
+    <symbol id="i-cable" viewBox="0 0 24 24"><path d="M8 3v4M12 3v4M6 7h8v3a4 4 0 0 1-8 0zM10 14v2a4 4 0 0 0 4 4h1a4 4 0 0 0 4-4V9"/></symbol>
+    <symbol id="i-ruler" viewBox="0 0 24 24"><path d="M3 16.5L16.5 3 21 7.5 7.5 21z"/><path d="M7.5 12l2 2M10.5 9l2 2M13.5 6l2 2"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+    <symbol id="i-redo" viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 13.5A8.5 8.5 0 1 1 10.5 3.5a6.5 6.5 0 0 0 10 10z"/></symbol>
+    <symbol id="i-auto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17z" fill="currentColor"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5v.6M12 16.8v.2"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-fit" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V5M7 10l5-5 5 5M5 20h14"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8z"/><path d="M14 3v5h5"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  </defs>
+</svg>
+
 <header class="bar">
-  <div class="brand">Rack Visualizer</div>
-  <div class="seg" id="viewSeg">
-    <button data-view="2d" class="on">2D</button><button data-view="3d">3D</button>
+  <div class="brand"><svg class="ic logo"><use href="#i-rack"/></svg><span>Rack Visualizer</span></div>
+
+  <div class="seg" id="viewSeg" role="group" aria-label="View">
+    <button data-view="2d" class="on" title="Front elevation">2D</button><button data-view="3d" title="3D view">3D</button>
   </div>
-  <div class="seg" id="modeSeg">
-    <button data-mode="select" class="on" title="Select and move (V)">Select</button><button data-mode="connect" title="Draw cables (C)">Cable</button><button data-mode="measure" title="Measure (M)">Measure</button>
+
+  <span class="divider"></span>
+
+  <div class="seg" id="modeSeg" role="group" aria-label="Tool">
+    <button data-mode="select" class="on" title="Select and move (V)"><svg class="ic"><use href="#i-cursor"/></svg><span class="lbl">Select</span></button><button data-mode="connect" title="Draw cables, port to port (C)"><svg class="ic"><use href="#i-cable"/></svg><span class="lbl">Cable</span></button><button data-mode="measure" title="Measure distances (M)"><svg class="ic"><use href="#i-ruler"/></svg><span class="lbl">Measure</span></button>
   </div>
-  <select id="cableType" title="Cable type for new cables"></select>
-  <div class="seg" id="routeSeg" title="How cables are drawn in 2D">
+  <label class="ctx" id="cableTypeWrap" title="Type for new cables" hidden>
+    <select id="cableType" aria-label="Cable type"></select>
+  </label>
+  <div class="seg" id="routeSeg" role="group" aria-label="Cable drawing" title="How cables are drawn in 2D">
     <button data-route="curve">Curved</button><button data-route="ortho">Diagram</button>
   </div>
-  <label class="inline">Units
-    <select id="unitSel"><option value="cm">cm</option><option value="in">in</option><option value="mm">mm</option></select>
-  </label>
+
   <div class="spacer"></div>
-  <button id="fitBtn" title="Fit view (F)">Fit</button>
-  <button id="undoBtn" title="Undo (Ctrl+Z)">Undo</button>
-  <button id="exportBtn">Export</button>
-  <button id="importBtn">Import</button>
+
+  <label class="ctx" title="Units for lengths">
+    <span class="lbl muted">Units</span>
+    <select id="unitSel" aria-label="Units"><option value="cm">cm</option><option value="in">in</option><option value="mm">mm</option></select>
+  </label>
+  <span class="divider"></span>
+  <button class="ib" id="undoBtn" title="Undo (Ctrl+Z)" aria-label="Undo"><svg class="ic"><use href="#i-undo"/></svg></button>
+  <button class="ib" id="redoBtn" title="Redo (Ctrl+Y)" aria-label="Redo"><svg class="ic"><use href="#i-redo"/></svg></button>
+  <button class="ib" id="themeBtn" aria-label="Theme"><svg class="ic"><use href="#i-auto"/></svg></button>
+  <button class="ib" id="helpBtn" title="Shortcuts and tips (?)" aria-label="Help"><svg class="ic"><use href="#i-help"/></svg></button>
+  <div class="menu-wrap">
+    <button id="fileBtn" aria-haspopup="menu" aria-expanded="false" title="Export, import or start over"><svg class="ic"><use href="#i-menu"/></svg><span class="lbl">File</span></button>
+    <div class="menu" id="fileMenu" role="menu" hidden>
+      <button role="menuitem" id="exportBtn"><svg class="ic"><use href="#i-download"/></svg>Export layout (.json)</button>
+      <button role="menuitem" id="importBtn"><svg class="ic"><use href="#i-upload"/></svg>Import layout…</button>
+      <hr>
+      <button role="menuitem" id="newBtn" class="danger"><svg class="ic"><use href="#i-file"/></svg><span>New empty layout</span></button>
+    </div>
+  </div>
   <input type="file" id="importFile" accept=".json,application/json" hidden>
-  <button id="newBtn">New</button>
 </header>
 
 <main>
   <aside class="left">
     <section>
-      <h3>Racks</h3>
+      <div class="sec-head">
+        <h3>Racks</h3>
+        <button class="link" id="newRackBtn" aria-expanded="false" aria-controls="addRackForm">+ New rack</button>
+      </div>
       <div id="rackList" class="list"></div>
-      <form id="addRackForm" class="grid2">
+      <form id="addRackForm" class="grid2 card" hidden>
         <label class="full">Preset
           <select name="preset" id="presetSel"></select>
         </label>
@@ -44,53 +92,93 @@
         <label>Height (U)<input name="units" type="number" min="1" max="100"></label>
         <label><span>Width (<span class="unit-lbl"></span>)</span><input name="width" type="number" step="any"></label>
         <label><span>Depth (<span class="unit-lbl"></span>)</span><input name="depth" type="number" step="any"></label>
-        <button type="submit" class="full primary">+ Add rack</button>
+        <div class="full row end">
+          <button type="button" id="cancelRack">Cancel</button>
+          <button type="submit" class="primary">Add rack</button>
+        </div>
       </form>
     </section>
     <section>
-      <h3>Equipment</h3>
-      <p class="hint">Click to add to the selected rack, or drag onto a rack in 2D.</p>
+      <div class="sec-head"><h3>Equipment</h3></div>
+      <p class="hint">Click to add to the selected rack, or drag it onto a rack.</p>
       <div id="palette"></div>
     </section>
   </aside>
 
   <div id="stage" data-mode="select">
-    <svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg>
+    <svg id="svg" xmlns="http://www.w3.org/2000/svg" aria-label="Rack elevation"></svg>
     <div id="three" hidden></div>
+    <div id="legend" class="float" hidden></div>
+    <div id="empty" class="empty-state" hidden>
+      <svg class="ic big"><use href="#i-rack"/></svg>
+      <h2>No racks yet</h2>
+      <p>Start with a standard 42U rack, or set a custom size with “+ New rack”.</p>
+      <button class="primary" id="emptyAdd">+ Add a 42U rack</button>
+    </div>
+    <div class="zoom float" id="zoomCtl">
+      <button class="ib" id="zoomOut" title="Zoom out (−)" aria-label="Zoom out"><svg class="ic"><use href="#i-minus"/></svg></button>
+      <span id="zoomLbl" title="Zoom relative to fit">100%</span>
+      <button class="ib" id="zoomIn" title="Zoom in (+)" aria-label="Zoom in"><svg class="ic"><use href="#i-plus"/></svg></button>
+      <span class="divider"></span>
+      <button class="ib" id="fitBtn" title="Fit everything (F)" aria-label="Fit view"><svg class="ic"><use href="#i-fit"/></svg></button>
+    </div>
     <div id="hud"></div>
-    <div id="toast" hidden></div>
+    <div id="toast" role="status" hidden></div>
   </div>
 
   <aside class="right">
-    <section>
-      <h3>Properties</h3>
+    <section class="props-sec">
+      <div class="sec-head"><h3 id="propsTitle">Properties</h3></div>
       <div id="props"></div>
     </section>
-    <section>
-      <h3>Converter</h3>
-      <div class="conv">
-        <label>U<input data-cv="U" type="number" step="any" min="0"></label>
-        <label>cm<input data-cv="cm" type="number" step="any" min="0"></label>
-        <label>in<input data-cv="in" type="number" step="any" min="0"></label>
-        <label>mm<input data-cv="mm" type="number" step="any" min="0"></label>
+    <details class="sec" data-key="cables" open>
+      <summary><h3>Cables</h3><span class="count" id="cableCount"></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+      <div class="sec-body"><div id="cableList" class="list"></div></div>
+    </details>
+    <details class="sec" data-key="style">
+      <summary><h3>Colors &amp; cable types</h3><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+      <div class="sec-body"><div id="styleEditor"></div></div>
+    </details>
+    <details class="sec" data-key="conv">
+      <summary><h3>Unit converter</h3><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+      <div class="sec-body">
+        <div class="conv">
+          <label>U<input data-cv="U" type="number" step="any" min="0"></label>
+          <label>cm<input data-cv="cm" type="number" step="any" min="0"></label>
+          <label>in<input data-cv="in" type="number" step="any" min="0"></label>
+          <label>mm<input data-cv="mm" type="number" step="any" min="0"></label>
+        </div>
+        <svg id="cvRuler" viewBox="0 0 280 72"></svg>
+        <p class="hint">1U = 44.45 mm = 4.445 cm = 1.75 in</p>
       </div>
-      <svg id="cvRuler" viewBox="0 0 280 72"></svg>
-      <p class="hint">1U = 44.45 mm = 4.445 cm = 1.75 in</p>
-    </section>
-    <section>
-      <h3>Colors &amp; cable types</h3>
-      <div id="styleEditor"></div>
-    </section>
-    <section>
-      <h3>Cables</h3>
-      <div id="cableList" class="list"></div>
-    </section>
+    </details>
   </aside>
 </main>
+
+<dialog id="helpDlg" aria-labelledby="helpTitle">
+  <div class="dlg-head">
+    <h2 id="helpTitle">Shortcuts &amp; tips</h2>
+    <button class="ib" data-close aria-label="Close"><svg class="ic"><use href="#i-close"/></svg></button>
+  </div>
+  <dl class="keys">
+    <dt><kbd>V</kbd></dt><dd>Select and move equipment</dd>
+    <dt><kbd>C</kbd></dt><dd>Cable tool: click a port, then a port on another device</dd>
+    <dt><kbd>M</kbd></dt><dd>Measure: drag anywhere</dd>
+    <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move the selected device to the next free slot</dd>
+    <dt><kbd>Del</kbd></dt><dd>Delete the selection</dd>
+    <dt><kbd>Esc</kbd></dt><dd>Cancel / clear selection</dd>
+    <dt><kbd>F</kbd></dt><dd>Fit everything in view</dd>
+    <dt><kbd>+</kbd> <kbd>−</kbd></dt><dd>Zoom in / out</dd>
+    <dt><kbd>Ctrl</kbd> <kbd>Z</kbd> / <kbd>Y</kbd></dt><dd>Undo / redo</dd>
+    <dt>Drag empty space</dt><dd>Pan (or right / middle mouse button)</dd>
+    <dt>Scroll · pinch</dt><dd>Zoom</dd>
+  </dl>
+  <p class="hint">Your layout saves automatically in this browser. Use File → Export to keep a copy or move it to another device.</p>
+</dialog>
 
 <datalist id="portCounts"><option value="4"><option value="8"><option value="12"><option value="16"><option value="24"><option value="48"></datalist>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

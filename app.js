@@ -118,10 +118,11 @@ const ui = {
   get unit() { return doc.settings.unit; },
 };
 
-const undoStack = [];
+const undoStack = [], redoStack = [];
 function mutate(fn) {
   undoStack.push(JSON.stringify(doc));
   if (undoStack.length > 200) undoStack.shift();
+  redoStack.length = 0;
   fn();
   save();
   renderAll();
@@ -129,6 +130,15 @@ function mutate(fn) {
 function undo() {
   const s = undoStack.pop();
   if (!s) return toast('Nothing to undo');
+  redoStack.push(JSON.stringify(doc));
+  doc = JSON.parse(s);
+  save();
+  renderAll();
+}
+function redo() {
+  const s = redoStack.pop();
+  if (!s) return toast('Nothing to redo');
+  undoStack.push(JSON.stringify(doc));
   doc = JSON.parse(s);
   save();
   renderAll();
@@ -502,6 +512,7 @@ function setMode(m) {
   if (m !== 'measure') ui.measure = null;
   stage.dataset.mode = m;
   for (const b of document.querySelectorAll('#modeSeg button')) b.classList.toggle('on', b.dataset.mode === m);
+  $('#cableTypeWrap').hidden = m !== 'connect';
   renderStage();
 }
 function setView(v) {
@@ -509,6 +520,8 @@ function setView(v) {
   svg.toggleAttribute('hidden', v !== '2d');
   threeEl.hidden = v !== '3d';
   for (const b of document.querySelectorAll('#viewSeg button')) b.classList.toggle('on', b.dataset.view === v);
+  $('#routeSeg').hidden = v !== '2d';
+  $('#zoomLbl').hidden = v !== '2d';
   if (v === '3d' && init3D()) { resize3D(); build3D(); if (!T.framed) { frame3D(); T.framed = true; } }
   renderStage();
 }
@@ -521,9 +534,19 @@ function toWorld(e) {
 function fit() {
   const L = layout(), r = svg.getBoundingClientRect();
   if (!r.width || !r.height) return;
-  const x0 = -260, x1 = Math.max(L.w, 600) + 60, y0 = Math.min(...Object.values(L.racks).map(R => R.top), L.h) - (doc.settings.route === 'ortho' ? 110 + doc.cables.length * LANE : 90), y1 = L.h + 80;
-  const k = Math.min(r.width / (x1 - x0), r.height / (y1 - y0)) * 0.94;
+  // margins for the ruler labels, the legend and the zoom controls are in screen pixels,
+  // so they depend on the scale: iterate a few times to settle it
+  const top = Math.min(...Object.values(L.racks).map(R => R.top), L.h) - (doc.settings.route === 'ortho' ? 110 + doc.cables.length * LANE : 90);
+  const x1 = Math.max(L.w, 600) + 60;
+  let k = 0.2, x0 = -260, y0 = top, y1 = L.h + 80;
+  for (let i = 0; i < 3; i++) {
+    x0 = -130 - 70 / k;
+    y0 = top - (doc.cables.length ? 44 / k : 0);
+    y1 = L.h + 30 + 44 / k;
+    k = Math.min(r.width / (x1 - x0), r.height / (y1 - y0)) * 0.96;
+  }
   ui.cam = { k, x: (r.width - (x1 - x0) * k) / 2 - x0 * k, y: (r.height - (y1 - y0) * k) / 2 - y0 * k };
+  ui.fitK = k;
   ui.userMoved = false;
 }
 function rackAtX(L, x, nearest) {
@@ -562,6 +585,7 @@ function rulerSVG(L) {
 
 function draw2D() {
   if (ui.view !== '2d') return;
+  if (!doc.racks.length) { svg.innerHTML = ''; return; }
   const L = layout(), port = portMap(L), k = ui.cam.k, used = portUse();
   let s = `<line class="floor" x1="-300" x2="${L.w + 300}" y1="${L.h}" y2="${L.h}"/>`;
   s += rulerSVG(L);
@@ -645,6 +669,7 @@ function draw2D() {
   }
 
   svg.innerHTML = `<g transform="translate(${ui.cam.x},${ui.cam.y}) scale(${k})">${s}</g>`;
+  $('#zoomLbl').textContent = Math.round(k / (ui.fitK || k) * 100) + '%';
 }
 
 function hud() {
@@ -693,16 +718,33 @@ function schedule() {
 
 /* pointer interaction */
 svg.addEventListener('contextmenu', e => e.preventDefault());
+function capture(e) { try { svg.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ } }
+const touches = new Map();
+let pinch = null;
+function touchInfo() {
+  const [a, b] = [...touches.values()], r = svg.getBoundingClientRect();
+  return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2 - r.left, my: (a.y + b.y) / 2 - r.top };
+}
 svg.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'touch') {
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (touches.size === 2) {
+      ui.drag = null; ui.pan = null;
+      if (ui.measure?.active) ui.measure = null;
+      pinch = { ...touchInfo(), cam: { ...ui.cam } };
+      capture(e);
+      return schedule();
+    }
+  }
   const p = toWorld(e);
-  const startPan = () => { ui.pan = { sx: e.clientX, sy: e.clientY, cx: ui.cam.x, cy: ui.cam.y }; svg.setPointerCapture(e.pointerId); };
+  const startPan = () => { ui.pan = { sx: e.clientX, sy: e.clientY, cx: ui.cam.x, cy: ui.cam.y }; capture(e); };
   if (e.button === 1 || e.button === 2) return startPan();
   if (e.button !== 0) return;
   const devEl = e.target.closest('[data-dev]'), cabEl = e.target.closest('[data-cable]'), rackEl = e.target.closest('[data-rack]');
 
   if (ui.mode === 'measure') {
     ui.measure = { a: p, b: p, active: true };
-    svg.setPointerCapture(e.pointerId);
+    capture(e);
     return schedule();
   }
   if (ui.mode === 'connect') {
@@ -714,7 +756,7 @@ svg.addEventListener('pointerdown', e => {
   if (devEl) {
     const id = devEl.dataset.dev, f = findDev(id), b = devRect(layout(), f.rack, f.dev);
     ui.drag = { id, offY: p.y - b.y, sx: e.clientX, sy: e.clientY, moved: false, target: null };
-    svg.setPointerCapture(e.pointerId);
+    capture(e);
     return select('device', id);
   }
   if (cabEl) return select('cable', cabEl.dataset.cable);
@@ -723,6 +765,14 @@ svg.addEventListener('pointerdown', e => {
   startPan();
 });
 svg.addEventListener('pointermove', e => {
+  if (touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinch && touches.size === 2) {
+    const t = touchInfo(), c = pinch.cam, k2 = clamp(c.k * t.d / pinch.d, 0.03, 8);
+    const wx = (pinch.mx - c.x) / c.k, wy = (pinch.my - c.y) / c.k;
+    ui.cam = { k: k2, x: t.mx - wx * k2, y: t.my - wy * k2 };
+    ui.userMoved = true;
+    return schedule();
+  }
   const p = toWorld(e), pe = e.target.closest?.('[data-port]');
   ui.hover = p;
   ui.hoverPort = pe ? { dev: pe.closest('[data-dev]').dataset.dev, key: pe.dataset.port } : null;
@@ -742,7 +792,9 @@ svg.addEventListener('pointermove', e => {
   }
   schedule();
 });
-function endPointer() {
+function endPointer(e) {
+  touches.delete(e?.pointerId);
+  if (pinch) { if (touches.size < 2) pinch = null; ui.pan = null; return; }
   if (ui.drag) {
     const d = ui.drag; ui.drag = null;
     if (d.moved && d.target) {
@@ -757,15 +809,28 @@ function endPointer() {
 svg.addEventListener('pointerup', endPointer);
 svg.addEventListener('pointercancel', endPointer);
 svg.addEventListener('pointerleave', () => { if (!ui.drag && !ui.pan) { ui.hover = null; schedule(); } });
-svg.addEventListener('wheel', e => {
-  e.preventDefault();
-  const r = svg.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
-  const k = ui.cam.k, k2 = clamp(k * Math.exp(-e.deltaY * 0.0015), 0.03, 8);
+function zoomAt(mx, my, factor) {
+  const k = ui.cam.k, k2 = clamp(k * factor, 0.03, 8);
   ui.cam.x = mx - (mx - ui.cam.x) * k2 / k;
   ui.cam.y = my - (my - ui.cam.y) * k2 / k;
   ui.cam.k = k2;
   ui.userMoved = true;
   schedule();
+}
+function zoomBy(factor) {
+  if (ui.view === '3d') {
+    if (!T.ready) return;
+    const v = T.camera.position.clone().sub(T.controls.target).multiplyScalar(1 / factor);
+    T.camera.position.copy(T.controls.target).add(v);
+    return;
+  }
+  const r = svg.getBoundingClientRect();
+  zoomAt(r.width / 2, r.height / 2, factor);
+}
+svg.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = svg.getBoundingClientRect();
+  zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.0015));
 }, { passive: false });
 
 /* drop from palette */
@@ -938,14 +1003,18 @@ function build3D() {
 function renderRackList() {
   rackListEl.innerHTML = doc.racks.length ? doc.racks.map(r => {
     const sel = isSel('rack', r.id) || (ui.sel?.kind === 'device' && findDev(ui.sel.id)?.rack === r);
-    return `<div class="item${sel ? ' sel' : ''}" data-id="${r.id}"><span class="grow">${esc(r.name)}</span><span class="muted">${usedU(r)}/${r.units}U</span></div>`;
+    const used = usedU(r), pct = Math.round(used / r.units * 100);
+    return `<div class="item rack-item${sel ? ' sel' : ''}" data-id="${r.id}" title="${used} of ${r.units}U used (${pct} %)">
+      <div class="ri-top"><span class="grow">${esc(r.name)}</span><span class="muted">${used}/${r.units}U</span></div>
+      <div class="meter"><i class="${pct >= 90 ? 'full' : ''}" style="width:${pct}%"></i></div></div>`;
   }).join('') : '<div class="empty">No racks yet.</div>';
 }
 rackListEl.addEventListener('click', e => { const it = e.target.closest('[data-id]'); if (it) select('rack', it.dataset.id); });
 
 function renderCableList() {
   const L = layout(), name = id => esc(findDev(id)?.dev.name ?? '?');
-  if (!doc.cables.length) { cableListEl.innerHTML = '<div class="empty">No cables. Use “Cable” mode and click two devices.</div>'; return; }
+  $('#cableCount').textContent = doc.cables.length || '';
+  if (!doc.cables.length) { cableListEl.innerHTML = '<div class="empty">No cables yet. Pick the Cable tool, then click a port and a port on another device.</div>'; return; }
   const totals = {}, lens = cableLengths(L);
   const rows = doc.cables.map(c => {
     const len = lens[c.id] || 0;
@@ -954,7 +1023,7 @@ function renderCableList() {
       `<span class="grow">${c.label ? esc(c.label) + ': ' : ''}${name(c.a)}${fmtPort(c.pa)} → ${name(c.b)}${fmtPort(c.pb)}</span><span class="muted">≈${fmtLong(len)}</span></div>`;
   }).join('');
   const sum = Object.entries(totals).map(([t, v]) => `<div class="item"><span class="sw line" style="--c:${ctype(t).color}"></span><span class="grow">${esc(ctype(t).name)} · ${v.n}</span><span class="muted">≈${fmtLong(v.len)}</span></div>`).join('');
-  cableListEl.innerHTML = rows + `<h3 style="margin-top:10px">Totals</h3>` + sum;
+  cableListEl.innerHTML = rows + `<h3 class="list-sub">Totals</h3>` + sum;
 }
 cableListEl.addEventListener('click', e => { const it = e.target.closest('[data-id]'); if (it) select('cable', it.dataset.id); });
 
@@ -966,6 +1035,7 @@ function deviceOptions(selected) {
 
 function renderProps() {
   const s = ui.sel, u = ui.unit;
+  $('#propsTitle').textContent = { device: 'Device', rack: 'Rack', cable: 'Cable' }[s?.kind] || 'Properties';
   let h = '';
   if (s?.kind === 'device') {
     const f = findDev(s.id);
@@ -1038,16 +1108,10 @@ function renderProps() {
     </div>`;
   } else {
     h = `<div class="stack">
-      <p class="hint">Select a rack, device or cable to edit it.</p>
+      <div class="empty-props"><svg class="ic"><use href="#i-cursor"/></svg>
+        <p><strong>Nothing selected</strong><br>Click a rack, device or cable to see and edit its details.</p></div>
+      <h4>Layout</h4>
       <label>Space between racks (${u})<input data-f="gap" type="number" step="any" min="0" value="${toDisp(doc.settings.gap)}"></label>
-      <dl class="kv">
-        <dt>V / C / M</dt><dd>Select · Cable · Measure</dd>
-        <dt>Drag empty space</dt><dd>Pan</dd>
-        <dt>Scroll</dt><dd>Zoom</dd>
-        <dt>Del</dt><dd>Delete selection</dd>
-        <dt>Ctrl+Z</dt><dd>Undo</dd>
-        <dt>F</dt><dd>Fit view</dd>
-      </dl>
     </div>`;
   }
   propsEl.innerHTML = h;
@@ -1190,15 +1254,31 @@ rackForm.addEventListener('submit', e => {
     depth: Math.max(2 * RAIL_INSET + 50, formMM.depth),
   });
   delete rackForm.name.dataset.touched;
+  showRackForm(false);
   ui.sel = { kind: 'rack', id: r.id }; ui.lastRack = r.id;
   mutate(() => doc.racks.push(r));
   if (ui.view === '2d') { fit(); draw2D(); }
 });
 
+const newRackBtn = $('#newRackBtn');
+function showRackForm(on) {
+  rackForm.hidden = !on;
+  newRackBtn.setAttribute('aria-expanded', on);
+  newRackBtn.textContent = on ? 'Close' : '+ New rack';
+  if (on) rackForm.name.focus();
+}
+newRackBtn.addEventListener('click', () => showRackForm(rackForm.hidden));
+$('#cancelRack').addEventListener('click', () => showRackForm(false));
+
 /* palette */
 const paletteEl = $('#palette');
-paletteEl.innerHTML = Object.entries(TYPES).map(([k, t]) =>
-  `<button class="pal" draggable="true" data-type="${k}"><span class="sw k-${t.cat}"></span>${t.label}<span class="muted">${t.h}U</span></button>`).join('');
+paletteEl.innerHTML = CATS.map(([cat, label]) => {
+  const items = Object.entries(TYPES).filter(([, t]) => t.cat === cat);
+  return items.length ? `<div class="pal-group"><div class="pal-head">${label}</div>` + items.map(([k, t]) =>
+    `<button class="pal" draggable="true" data-type="${k}" title="Add a ${t.label.toLowerCase()} (${t.h}U), or drag it onto a rack">` +
+    `<span class="sw k-${cat}"></span><span class="grow">${t.label}</span><span class="muted">${t.h}U</span>` +
+    `<svg class="ic add"><use href="#i-plus"/></svg></button>`).join('') + '</div>' : '';
+}).join('');
 paletteEl.addEventListener('click', e => { const b = e.target.closest('[data-type]'); if (b) addDevice(b.dataset.type); });
 paletteEl.addEventListener('dragstart', e => {
   const b = e.target.closest('[data-type]');
@@ -1305,7 +1385,55 @@ $('#routeSeg').addEventListener('click', e => {
 unitSel.value = ui.unit;
 unitSel.addEventListener('change', () => { doc.settings.unit = unitSel.value; save(); renderAll(); });
 $('#fitBtn').addEventListener('click', () => { if (ui.view === '3d' && T.ready) frame3D(); else { fit(); draw2D(); } });
+$('#zoomIn').addEventListener('click', () => zoomBy(1.25));
+$('#zoomOut').addEventListener('click', () => zoomBy(0.8));
 $('#undoBtn').addEventListener('click', undo);
+$('#redoBtn').addEventListener('click', redo);
+
+/* file menu */
+const fileBtn = $('#fileBtn'), fileMenu = $('#fileMenu');
+function showMenu(on) { fileMenu.hidden = !on; fileBtn.setAttribute('aria-expanded', on); }
+fileBtn.addEventListener('click', e => { e.stopPropagation(); showMenu(fileMenu.hidden); });
+document.addEventListener('click', e => { if (!fileMenu.hidden && !e.target.closest('.menu-wrap')) showMenu(false); });
+fileMenu.addEventListener('click', e => { if (e.target.closest('#exportBtn, #importBtn')) showMenu(false); });
+
+/* theme: auto -> light -> dark */
+const themeBtn = $('#themeBtn');
+let theme = 'auto';
+try { theme = localStorage.getItem('rackviz.theme') || 'auto'; } catch (e) { /* ignore */ }
+function applyTheme() {
+  if (theme === 'auto') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+  themeBtn.querySelector('use').setAttribute('href', '#i-' + { auto: 'auto', light: 'sun', dark: 'moon' }[theme]);
+  themeBtn.title = `Theme: ${theme === 'auto' ? 'match system' : theme} (click to change)`;
+}
+themeBtn.addEventListener('click', () => {
+  theme = { auto: 'light', light: 'dark', dark: 'auto' }[theme];
+  try { localStorage.setItem('rackviz.theme', theme); } catch (e) { /* ignore */ }
+  applyTheme();
+  renderAll();
+  toast(`Theme: ${theme === 'auto' ? 'match system' : theme}`);
+});
+applyTheme();
+
+/* help */
+const helpDlg = $('#helpDlg');
+$('#helpBtn').addEventListener('click', () => helpDlg.showModal());
+helpDlg.addEventListener('click', e => { if (e.target === helpDlg || e.target.closest('[data-close]')) helpDlg.close(); });
+
+/* empty state */
+$('#emptyAdd').addEventListener('click', () => {
+  const r = makeRack({ name: nextRackName(), units: 42, width: 600, depth: 1000 });
+  ui.sel = { kind: 'rack', id: r.id }; ui.lastRack = r.id;
+  mutate(() => doc.racks.push(r));
+  fit(); draw2D();
+});
+
+/* collapsible sidebar sections remember their state */
+for (const d of document.querySelectorAll('details.sec')) {
+  try { const v = localStorage.getItem('rackviz.open.' + d.dataset.key); if (v != null) d.open = v === '1'; } catch (e) { /* ignore */ }
+  d.addEventListener('toggle', () => { try { localStorage.setItem('rackviz.open.' + d.dataset.key, d.open ? '1' : '0'); } catch (e) { /* ignore */ } });
+}
 $('#exportBtn').addEventListener('click', () => {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' }));
@@ -1328,21 +1456,27 @@ importFile.addEventListener('change', async () => {
   } catch { toast('That file is not a rack layout'); }
 });
 $('#newBtn').addEventListener('click', e => {
-  const btn = e.currentTarget, reset = () => { delete btn.dataset.armed; btn.classList.remove('armed'); btn.textContent = 'New'; };
+  e.stopPropagation();
+  const btn = e.currentTarget, lbl = btn.querySelector('span');
+  const reset = () => { delete btn.dataset.armed; btn.classList.remove('armed'); lbl.textContent = 'New empty layout'; };
   if (!btn.dataset.armed) {
-    btn.dataset.armed = '1'; btn.classList.add('armed'); btn.textContent = 'Clear everything?';
+    btn.dataset.armed = '1'; btn.classList.add('armed'); lbl.textContent = 'Click again to clear everything';
     setTimeout(reset, 3000);
     return;
   }
   reset();
+  showMenu(false);
   ui.sel = null; ui.pending = null; ui.measure = null;
-  mutate(() => { const s = doc.settings; doc = blankDoc(); doc.settings = s; doc.racks.push(makeRack({ name: 'Rack A' })); });
+  mutate(() => { const s = doc.settings; doc = blankDoc(); doc.settings = s; });
   fit(); renderAll();
 });
 
 document.addEventListener('keydown', e => {
   const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName);
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !typing) { e.preventDefault(); return undo(); }
+  const key = e.key.toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && !typing && (key === 'y' || (key === 'z' && e.shiftKey))) { e.preventDefault(); return redo(); }
+  if ((e.ctrlKey || e.metaKey) && key === 'z' && !typing) { e.preventDefault(); return undo(); }
+  if (e.key === 'Escape' && !fileMenu.hidden) return showMenu(false);
   if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key.toLowerCase();
   if (e.key === 'Escape') { ui.pending = null; ui.measure = null; ui.sel = null; renderAll(); }
@@ -1351,6 +1485,9 @@ document.addEventListener('keydown', e => {
   else if (k === 'c') setMode('connect');
   else if (k === 'm') setMode('measure');
   else if (k === 'f') $('#fitBtn').click();
+  else if (e.key === '+' || e.key === '=') zoomBy(1.25);
+  else if (e.key === '-' || e.key === '_') zoomBy(0.8);
+  else if (e.key === '?') helpDlg.showModal();
   else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && ui.sel?.kind === 'device') {
     e.preventDefault();
     shiftDev(ui.sel.id, e.key === 'ArrowUp' ? 1 : -1);
@@ -1378,7 +1515,19 @@ function renderAll() {
   renderCableList();
   renderRackForm();
   drawConvRuler();
+  renderLegend();
+  $('#empty').hidden = doc.racks.length > 0;
+  if (!doc.racks.length && rackForm.hidden === false) showRackForm(false);
+  $('#undoBtn').disabled = !undoStack.length;
+  $('#redoBtn').disabled = !redoStack.length;
   renderStage();
+}
+function renderLegend() {
+  const n = {};
+  doc.cables.forEach(c => (n[c.type] = (n[c.type] || 0) + 1));
+  const el = $('#legend'), types = doc.settings.cableTypes.filter(t => n[t.id]);
+  el.hidden = !types.length;
+  el.innerHTML = types.map(t => `<span><i class="sw line" style="--c:${t.color}"></i>${esc(t.name)} <span class="muted">${n[t.id]}</span></span>`).join('');
 }
 
 new ResizeObserver(() => {

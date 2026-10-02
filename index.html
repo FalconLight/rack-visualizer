@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rack Visualizer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">Rack Visualizer</div>
+  <div class="seg" id="viewSeg">
+    <button data-view="2d" class="on">2D</button><button data-view="3d">3D</button>
+  </div>
+  <div class="seg" id="modeSeg">
+    <button data-mode="select" class="on" title="Select and move (V)">Select</button><button data-mode="connect" title="Draw cables (C)">Cable</button><button data-mode="measure" title="Measure (M)">Measure</button>
+  </div>
+  <select id="cableType" title="Cable type for new cables"></select>
+  <div class="seg" id="routeSeg" title="How cables are drawn in 2D">
+    <button data-route="curve">Curved</button><button data-route="ortho">Diagram</button>
+  </div>
+  <label class="inline">Units
+    <select id="unitSel"><option value="cm">cm</option><option value="in">in</option><option value="mm">mm</option></select>
+  </label>
+  <div class="spacer"></div>
+  <button id="fitBtn" title="Fit view (F)">Fit</button>
+  <button id="undoBtn" title="Undo (Ctrl+Z)">Undo</button>
+  <button id="exportBtn">Export</button>
+  <button id="importBtn">Import</button>
+  <input type="file" id="importFile" accept=".json,application/json" hidden>
+  <button id="newBtn">New</button>
+</header>
+
+<main>
+  <aside class="left">
+    <section>
+      <h3>Racks</h3>
+      <div id="rackList" class="list"></div>
+      <form id="addRackForm" class="grid2">
+        <label class="full">Preset
+          <select name="preset" id="presetSel"></select>
+        </label>
+        <label>Name<input name="name"></label>
+        <label>Height (U)<input name="units" type="number" min="1" max="100"></label>
+        <label><span>Width (<span class="unit-lbl"></span>)</span><input name="width" type="number" step="any"></label>
+        <label><span>Depth (<span class="unit-lbl"></span>)</span><input name="depth" type="number" step="any"></label>
+        <button type="submit" class="full primary">+ Add rack</button>
+      </form>
+    </section>
+    <section>
+      <h3>Equipment</h3>
+      <p class="hint">Click to add to the selected rack, or drag onto a rack in 2D.</p>
+      <div id="palette"></div>
+    </section>
+  </aside>
+
+  <div id="stage" data-mode="select">
+    <svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div id="three" hidden></div>
+    <div id="hud"></div>
+    <div id="toast" hidden></div>
+  </div>
+
+  <aside class="right">
+    <section>
+      <h3>Properties</h3>
+      <div id="props"></div>
+    </section>
+    <section>
+      <h3>Converter</h3>
+      <div class="conv">
+        <label>U<input data-cv="U" type="number" step="any" min="0"></label>
+        <label>cm<input data-cv="cm" type="number" step="any" min="0"></label>
+        <label>in<input data-cv="in" type="number" step="any" min="0"></label>
+        <label>mm<input data-cv="mm" type="number" step="any" min="0"></label>
+      </div>
+      <svg id="cvRuler" viewBox="0 0 280 72"></svg>
+      <p class="hint">1U = 44.45 mm = 4.445 cm = 1.75 in</p>
+    </section>
+    <section>
+      <h3>Colors &amp; cable types</h3>
+      <div id="styleEditor"></div>
+    </section>
+    <section>
+      <h3>Cables</h3>
+      <div id="cableList" class="list"></div>
+    </section>
+  </aside>
+</main>
+
+<datalist id="portCounts"><option value="4"><option value="8"><option value="12"><option value="16"><option value="24"><option value="48"></datalist>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

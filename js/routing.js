@@ -74,7 +74,7 @@ function applyOrder(list, stored, key) {
 const LANE = 8;
 function diagramRoutes(L, port, face = 'front', orders) {
   const stored = orders === undefined ? doc.routeOrder?.[face] || {} : orders;
-  const items = [], idx = {}, routes = {}, meta = { lanes: {}, top: [], bottom: [] };
+  const items = [], idx = {}, routes = {}, meta = { lanes: {}, ends: {}, top: [], bottom: [] };
   doc.racks.forEach((r, i) => (idx[r.id] = i));
   for (const c of doc.cables) {
     const a = port(c.a, c.id, c.pa), b = port(c.b, c.id, c.pb);
@@ -170,6 +170,7 @@ function diagramRoutes(L, port, face = 'front', orders) {
     const [rid, side] = key.split(':'), R = L.racks[rid];
     const list = applyOrder(list0, stored[key], l => l.span);
     meta.lanes[key] = list.map(l => l.id);
+    meta.ends[key] = list.map(l => l.ends);
     const sp = list.length > 12 ? Math.max(3, 100 / list.length) : LANE;
     list.forEach((l, k) => {
       const x = side === 'R' ? R.px + PANEL_W + 12 + k * sp : R.px - 44 - k * sp;
@@ -208,44 +209,81 @@ function cableLengths(L = layout()) {
   return out;
 }
 
+/* a route's horizontal segments [x0, x1, y] and vertical segments [y0, y1, x] */
+function routeSegs(pts) {
+  const H = [], V = [];
+  for (let i = 1; i < pts.length; i++) {
+    const p = pts[i - 1], q = pts[i];
+    if (Math.abs(p.y - q.y) < 0.01 && Math.abs(p.x - q.x) > 0.01) H.push([Math.min(p.x, q.x), Math.max(p.x, q.x), p.y]);
+    else if (Math.abs(p.x - q.x) < 0.01 && Math.abs(p.y - q.y) > 0.01) V.push([Math.min(p.y, q.y), Math.max(p.y, q.y), p.x]);
+  }
+  return { H, V };
+}
+const crosses = (h, v) => v[2] > h[0] + 0.01 && v[2] < h[1] - 0.01 && h[2] > v[0] + 0.01 && h[2] < v[1] - 0.01;
+/* crossings between two cables */
+function pairCrossings(A, B) {
+  let n = 0;
+  for (const h of A.H) for (const v of B.V) if (crosses(h, v)) n++;
+  for (const h of B.H) for (const v of A.V) if (crosses(h, v)) n++;
+  return n;
+}
 /* crossings between horizontal and vertical segments of different cables */
 function countCrossings(routes) {
   const H = [], V = [];
   for (const [id, pts] of Object.entries(routes)) {
-    for (let i = 1; i < pts.length; i++) {
-      const p = pts[i - 1], q = pts[i];
-      if (Math.abs(p.y - q.y) < 0.01 && Math.abs(p.x - q.x) > 0.01) H.push([Math.min(p.x, q.x), Math.max(p.x, q.x), p.y, id]);
-      else if (Math.abs(p.x - q.x) < 0.01 && Math.abs(p.y - q.y) > 0.01) V.push([Math.min(p.y, q.y), Math.max(p.y, q.y), p.x, id]);
-    }
+    const s = routeSegs(pts);
+    for (const h of s.H) H.push([...h, id]);
+    for (const v of s.V) V.push([...v, id]);
   }
   let n = 0;
-  for (const h of H) for (const v of V)
-    if (h[3] !== v[3] && v[2] > h[0] + 0.01 && v[2] < h[1] - 0.01 && h[2] > v[0] + 0.01 && h[2] < v[1] - 0.01) n++;
+  for (const h of H) for (const v of V) if (h[3] !== v[3] && crosses(h, v)) n++;
   return n;
 }
 /* "Tidy": swap neighbouring cables in each lane and tray while that removes crossings.
+   Swapping two neighbours only swaps their lane coordinates, so each trial patches those two
+   routes and recounts their crossings alone, instead of rebuilding everything.
    Bounded by a time budget so big layouts stay responsive. */
-function optimizeRoutes(budget = 700) {
+function optimizeRoutes(budget = 1500, start = {}) {   // start: lane orders per face to begin from (default: shortest first)
   const L = layout(), port = portMap(L), t0 = performance.now(), result = {};
   let before = 0, after = 0;
   for (const face of ['front', 'rear']) {
     before += countCrossings(diagramRoutes(L, port, face).routes);
-    const base = diagramRoutes(L, port, face, {});
-    const orders = { top: [...base.meta.top], bottom: [...base.meta.bottom] };
-    for (const [k, v] of Object.entries(base.meta.lanes)) orders[k] = [...v];
-    let best = countCrossings(base.routes);
+    const base = diagramRoutes(L, port, face, start[face] || {});
+    const routes = {}, segs = {};
+    for (const [id, pts] of Object.entries(base.routes)) { routes[id] = pts.map(p => ({ x: p.x, y: p.y })); segs[id] = routeSegs(routes[id]); }
+    const ids = Object.keys(routes);
+    const crossOf = (p, q) => {   // crossings that involve p or q
+      let n = 0;
+      for (const o of ids) if (o !== p && o !== q) n += pairCrossings(segs[p], segs[o]) + pairCrossings(segs[q], segs[o]);
+      return n + pairCrossings(segs[p], segs[q]);
+    };
+    /* every reorderable list: the cable ids, which route points hold its coordinate, and which axis */
+    const lists = [];
+    for (const [k, v] of Object.entries(base.meta.lanes))
+      lists.push({ key: k, arr: [...v], axis: 'x', pts: base.meta.ends[k].map(e => (e === 'b' ? [4, 5] : [2, 3])) });
+    for (const via of ['top', 'bottom']) lists.push({ key: via, arr: [...base.meta[via]], axis: 'y', pts: base.meta[via].map(() => [3, 4]) });
+    const swap = (l, i) => {
+      const p = l.arr[i], q = l.arr[i + 1], [ip, iq] = [l.pts[i], l.pts[i + 1]];
+      const vp = routes[p][ip[0]][l.axis], vq = routes[q][iq[0]][l.axis];
+      for (const j of ip) routes[p][j][l.axis] = vq;
+      for (const j of iq) routes[q][j][l.axis] = vp;
+      segs[p] = routeSegs(routes[p]); segs[q] = routeSegs(routes[q]);
+      [l.arr[i], l.arr[i + 1]] = [q, p];
+      [l.pts[i], l.pts[i + 1]] = [iq, ip];
+    };
     for (let pass = 0; pass < 8 && performance.now() - t0 < budget; pass++) {
       let changed = false;
-      for (const arr of Object.values(orders)) {
-        for (let i = 0; i + 1 < arr.length && performance.now() - t0 < budget; i++) {
-          [arr[i], arr[i + 1]] = [arr[i + 1], arr[i]];
-          const n = countCrossings(diagramRoutes(L, port, face, orders).routes);
-          if (n < best) { best = n; changed = true; } else [arr[i], arr[i + 1]] = [arr[i + 1], arr[i]];
+      for (const l of lists) {
+        for (let i = 0; i + 1 < l.arr.length && performance.now() - t0 < budget; i++) {
+          const p = l.arr[i], q = l.arr[i + 1], old = crossOf(p, q);
+          swap(l, i);
+          if (crossOf(p, q) < old) changed = true; else swap(l, i);   // swapping back restores it exactly
         }
       }
       if (!changed) break;
     }
-    after += best;
+    const orders = Object.fromEntries(lists.map(l => [l.key, l.arr]));
+    after += countCrossings(diagramRoutes(L, port, face, orders).routes);
     result[face] = orders;
   }
   return { orders: result, before, after };

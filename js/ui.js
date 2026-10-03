@@ -61,7 +61,10 @@ function addDevice(type, rack = targetRack(), u = null, fields = {}) {
   } else {
     d.u = u;
     const err = conflict(rack, d);
-    if (err) return toast(err);
+    if (err) {   // dropped on something: take the nearest slot where it fits
+      d.u = nearestFree(rack, d, clamp(u, 1, Math.max(1, rack.units - d.h + 1)));
+      if (!d.u) return toast(err);
+    }
   }
   ui.sel = { kind: 'device', id: d.id }; ui.multi.clear(); ui.lastRack = rack.id;
   mutate(() => rack.devices.push(d));
@@ -117,6 +120,28 @@ function connectClick(id, port = '') {
   const warn = cableCheck(c);
   if (warn) toast('⚠ ' + warn);
   else if (type !== ui.cableType) toast(`Used a ${ctype(type).name} cable for these ports`);
+}
+/* patch runs: the port pairs after cable c (P5→P5 gives P6→P6, P7→P7, …) while both are there and free */
+function runPairs(c, max = 96) {
+  const A = findDev(c.a)?.dev, B = findDev(c.b)?.dev, use = portUse(), out = [];
+  if (!A || !B || !c.pa || !c.pb) return out;
+  for (let i = 1; i <= max; i++) {
+    const pa = c.pa[0] + (+c.pa.slice(1) + i), pb = c.pb[0] + (+c.pb.slice(1) + i);
+    if (!validPort(A, pa) || !validPort(B, pb) || use[c.a]?.[pa] || use[c.b]?.[pb]) break;
+    out.push([pa, pb]);
+  }
+  return out;
+}
+function continueRun(c, n) {
+  const pairs = runPairs(c, n);
+  if (!pairs.length) return toast('The next ports are taken or don’t exist');
+  const keep = ['type', 'color', 'via'].filter(k => c[k] !== undefined);
+  mutate(() => {
+    for (const [pa, pb] of pairs) doc.cables.push({ id: uid(), a: c.a, b: c.b, pa, pb, label: '', ...Object.fromEntries(keep.map(k => [k, c[k]])) });
+  });
+  const A = findDev(c.a).dev, B = findDev(c.b).dev, last = pairs[pairs.length - 1];
+  toast(`Added ${pairs.length} cable${pairs.length > 1 ? 's' : ''}: ${A.name} ${portShort(pairs[0][0])}–${portShort(last[0])} → ${B.name} ${portShort(pairs[0][1])}–${portShort(last[1])}`
+    + (pairs.length < n ? ` (stopped at a port that is taken or missing)` : ''));
 }
 /* move devices up / down to the next position where all of them fit */
 function shiftDevs(ids, dir) {
@@ -270,12 +295,13 @@ svg.addEventListener('pointerdown', e => {
   const startPan = () => { ui.pan = { sx: e.clientX, sy: e.clientY, cx: ui.cam.x, cy: ui.cam.y }; capture(e); };
   if (e.button === 1 || e.button === 2) return startPan();
   if (e.button !== 0) return;
-  const devEl = e.target.closest('[data-dev]'), cabEl = e.target.closest('[data-cable]'), rackEl = e.target.closest('[data-rack]');
+  let devEl = e.target.closest('[data-dev]');
+  const cabEl = e.target.closest('[data-cable]'), rackEl = e.target.closest('[data-rack]');
 
   if (ui.mode === 'measure') {
     ui.measure = { a: p, b: p, active: true };
     capture(e);
-    return schedule();
+    return schedule(true);
   }
   if (ui.mode === 'connect') {
     if (devEl) connectClick(devEl.dataset.dev, e.target.closest('[data-port]')?.dataset.port || '');
@@ -283,15 +309,21 @@ svg.addEventListener('pointerdown', e => {
     else startPan();
     return;
   }
+  // a cable drawn across a device: dragging moves the device, a plain click still selects the cable
+  let usedPt = e.target.closest('.pt.used'), viaCable = null;
+  if (cabEl && e.target.classList.contains('cable-hit')) {
+    const under = document.elementsFromPoint(e.clientX, e.clientY).find(el => el.closest('[data-dev]'));
+    if (under) { viaCable = cabEl.dataset.cable; devEl = under.closest('[data-dev]'); usedPt = under.closest('.pt.used'); }
+  }
   // grab a cable end: a handle on the selected cable, or a plugged-in port
-  const endEl = e.target.closest('[data-end]'), usedPt = e.target.closest('.pt.used');
+  const endEl = e.target.closest('[data-end]');
   let grab = endEl && { cid: endEl.dataset.cid, end: endEl.dataset.end };
   if (!grab && usedPt && devEl && !e.shiftKey) {
     const dev = devEl.dataset.dev, key = usedPt.dataset.port, c = portUse()[dev]?.[key];
     if (c) grab = { cid: c.id, end: c.a === dev && c.pa === key ? 'a' : 'b' };
   }
   if (grab) {
-    ui.rewire = { ...grab, sx: e.clientX, sy: e.clientY, moved: false, target: null };
+    ui.rewire = { ...grab, click: viaCable, sx: e.clientX, sy: e.clientY, moved: false, target: null };
     stage.classList.add('rewiring');
     capture(e);
     return;
@@ -301,8 +333,9 @@ svg.addEventListener('pointerdown', e => {
     if (e.shiftKey || e.ctrlKey || e.metaKey) return toggleMulti(id);
     const f = findDev(id), b = devRect(layout(), f.rack, f.dev);
     const group = ui.multi.size > 1 && ui.multi.has(id) ? [...ui.multi] : [id];
-    ui.drag = { ids: group, primary: id, offY: p.y - b.y, sx: e.clientX, sy: e.clientY, moved: false, targets: null, err: null };
+    ui.drag = { ids: group, primary: id, click: viaCable, offY: p.y - b.y, sx: e.clientX, sy: e.clientY, moved: false, targets: null, err: null };
     capture(e);
+    if (viaCable) return;   // decided on release: a drag selects the device, a click the cable
     if (group.length === 1) return select('device', id);
     ui.sel = { kind: 'device', id };
     return renderAll();
@@ -311,7 +344,7 @@ svg.addEventListener('pointerdown', e => {
   if (e.shiftKey) {   // box select
     ui.marquee = { a: p, b: p, add: e.ctrlKey || e.metaKey, sx: e.clientX, sy: e.clientY };
     capture(e);
-    return schedule();
+    return schedule(true);
   }
   if (rackEl) select('rack', rackEl.dataset.rack);
   else if (ui.sel || ui.multi.size) select(null);
@@ -329,16 +362,25 @@ svg.addEventListener('pointermove', e => {
   const p = toWorld(e), pe = e.target.closest?.('[data-port]');
   ui.hover = p;
   ui.hoverPort = pe ? { dev: pe.closest('[data-dev]').dataset.dev, key: pe.dataset.port } : null;
+  let light = true;   // most moves only touch the camera or the overlays
   if (ui.pan) {
     ui.cam.x = ui.pan.cx + e.clientX - ui.pan.sx;
     ui.cam.y = ui.pan.cy + e.clientY - ui.pan.sy;
     ui.userMoved = true;
   } else if (ui.rewire) {
     if (!ui.rewire.moved && Math.hypot(e.clientX - ui.rewire.sx, e.clientY - ui.rewire.sy) < 4) return;
+    const was = ui.rewire.target, now = rewireTarget(e);
+    // the scene shows the ghosted cable and the highlighted drop port: redraw it when those change
+    light = ui.rewire.moved && was?.dev === now?.dev && was?.key === now?.key && was?.err === now?.err;
     ui.rewire.moved = true;
-    ui.rewire.target = rewireTarget(e);
+    ui.rewire.target = now;
   } else if (ui.drag) {
     if (!ui.drag.moved && Math.hypot(e.clientX - ui.drag.sx, e.clientY - ui.drag.sy) < 4) return;
+    if (!ui.drag.moved && ui.drag.click) {   // started on a cable over the device: now it's a device drag
+      ui.drag.click = null;
+      if (ui.drag.ids.length === 1) select('device', ui.drag.primary); else { ui.sel = { kind: 'device', id: ui.drag.primary }; renderAll(); }
+    }
+    light = ui.drag.moved;   // the first move marks the dragged devices; after that only the ghost moves
     ui.drag.moved = true;
     dragTargets(p);
   } else if (ui.marquee) {
@@ -346,7 +388,7 @@ svg.addEventListener('pointermove', e => {
   } else if (ui.measure?.active) {
     ui.measure.b = p;
   }
-  schedule();
+  schedule(light);
 });
 /* where the dragged device(s) would land */
 function dragTargets(p) {
@@ -354,7 +396,7 @@ function dragTargets(p) {
   if (!f) return;
   if (isZeroU(f.dev)) {
     const rack = rackAtX(L, fx, true), R = L.racks[rack.id];
-    const len = Math.min(f.dev.length || T_(f.dev).len, rack.units * U_MM);
+    const len = Math.min(zLen(f.dev), rack.units * U_MM);
     const patch = { side: fx < R.x + rack.width / 2 ? 'left' : 'right', length: len,
       offset: clamp(Math.round((p.y - D.offY - R.railTop) / U_MM) * U_MM, 0, rack.units * U_MM - len) };
     D.targets = [{ id: f.dev.id, rackId: rack.id, patch }];
@@ -404,7 +446,7 @@ function cancelRewire() {
 function finishRewire() {
   const r = ui.rewire;
   cancelRewire();
-  if (!r.moved) return select('cable', r.cid);
+  if (!r.moved) return select('cable', r.click || r.cid);
   const t = r.target, c = doc.cables.find(c => c.id === r.cid);
   if (t?.err) toast(t.err);
   else if (t && c && !(c[r.end] === t.dev && c['p' + r.end] === t.key)) {
@@ -436,6 +478,7 @@ function endPointer(e) {
   if (ui.marquee) return finishMarquee();
   if (ui.drag) {
     const D = ui.drag; ui.drag = null;
+    if (!D.moved && D.click) return select('cable', D.click);
     if (D.moved && D.targets?.length) { if (D.err) toast(D.err); else applyMoves(D.targets); }
     renderAll();
   }
@@ -445,7 +488,7 @@ function endPointer(e) {
 }
 svg.addEventListener('pointerup', endPointer);
 svg.addEventListener('pointercancel', endPointer);
-svg.addEventListener('pointerleave', () => { if (!ui.drag && !ui.pan && !ui.rewire && !ui.marquee) { ui.hover = null; schedule(); } });
+svg.addEventListener('pointerleave', () => { if (!ui.drag && !ui.pan && !ui.rewire && !ui.marquee) { ui.hover = null; schedule(true); } });
 function zoomAt(mx, my, factor) {
   const k = ui.cam.k, k2 = clamp(k * factor, 0.03, 8);
   ui.cam.x = mx - (mx - ui.cam.x) * k2 / k;
@@ -492,12 +535,48 @@ function renderRackList() {
     const sel = isSel('rack', r.id) || selectedDevIds().some(id => findDev(id)?.rack === r);
     const used = usedU(r), pct = Math.round(used / r.units * 100), info = pm.racks.find(x => x.rack === r);
     const heavy = info.kg > info.maxKg;
-    return `<div class="item rack-item${sel ? ' sel' : ''}" data-id="${r.id}" title="${used} of ${r.units}U used (${pct} %) · ${fmtW(info.watts)} · ${fmtKg(info.kg)}">
+    return `<div class="item rack-item${sel ? ' sel' : ''}" data-id="${r.id}" draggable="true" title="${used} of ${r.units}U used (${pct} %) · ${fmtW(info.watts)} · ${fmtKg(info.kg)} · drag to reorder">
       <div class="ri-top"><span class="grow">${esc(r.name)}${heavy ? ' <span class="warn-dot" title="Over its weight limit">⚠</span>' : ''}</span><span class="muted">${used}/${r.units}U</span></div>
       <div class="meter"><i class="${pct >= 90 ? 'full' : ''}" style="width:${pct}%"></i></div></div>`;
   }).join('') : '<div class="empty">No racks yet.</div>';
 }
 rackListEl.addEventListener('click', e => { const it = e.target.closest('[data-id]'); if (it) select('rack', it.dataset.id); });
+/* drag racks in the list to change their order (left to right in the elevation) */
+let rackDragId = null;
+const clearDropMarks = () => rackListEl.querySelectorAll('.drop-before, .drop-after').forEach(el => el.classList.remove('drop-before', 'drop-after'));
+rackListEl.addEventListener('dragstart', e => {
+  const it = e.target.closest('[data-id]'); if (!it) return;
+  rackDragId = it.dataset.id;
+  e.dataTransfer.setData('text/x-rack-id', rackDragId);
+  e.dataTransfer.effectAllowed = 'move';
+  it.classList.add('dragging');
+});
+rackListEl.addEventListener('dragover', e => {
+  const it = e.target.closest('[data-id]');
+  if (!rackDragId || !it) return;
+  e.preventDefault();
+  const r = it.getBoundingClientRect(), after = e.clientY > r.top + r.height / 2;
+  clearDropMarks();
+  if (it.dataset.id !== rackDragId) it.classList.add(after ? 'drop-after' : 'drop-before');
+});
+rackListEl.addEventListener('drop', e => {
+  const it = e.target.closest('[data-id]'), id = rackDragId;
+  if (!id || !it) return;
+  e.preventDefault();
+  const after = it.classList.contains('drop-after'), target = it.dataset.id;
+  clearDropMarks();
+  if (target === id) return;
+  const from = doc.racks.findIndex(r => r.id === id);
+  mutate(() => {
+    const [r] = doc.racks.splice(from, 1);
+    doc.racks.splice(doc.racks.findIndex(x => x.id === target) + (after ? 1 : 0), 0, r);
+  });
+});
+rackListEl.addEventListener('dragend', () => {
+  rackDragId = null;
+  clearDropMarks();
+  rackListEl.querySelector('.dragging')?.classList.remove('dragging');
+});
 
 function renderCableList() {
   const name = id => esc(findDev(id)?.dev.name ?? '?');
@@ -531,7 +610,7 @@ function renderPowerPanel() {
     + `<div class="ri-top small"><span class="grow muted">Weight</span><span class="${r.kg > r.maxKg ? 'bad-text' : 'muted'}">${fmtKg(r.kg)} / ${fmtKg(r.maxKg)}</span></div>${meter(r.kg, r.maxKg)}</div>`).join('');
   if (pm.sources.length) {
     h += '<div class="sub">Power sources</div>';
-    h += pm.sources.map(s => `<div class="pw-row" data-dev="${s.dev.id}"><div class="ri-top"><span class="grow">${esc(s.dev.name)}${s.dev.feed ? ` <span class="tag">${s.dev.feed}</span>` : ''}</span>`
+    h += pm.sources.map(s => `<div class="pw-row" data-dev="${s.dev.id}"><div class="ri-top"><span class="grow">${esc(s.dev.name)}${s.dev.feed ? ` <span class="tag">${esc(s.dev.feed)}</span>` : ''}</span>`
       + `<span class="muted">${fmtW(s.normal)}${s.cap ? ' / ' + fmtW(s.cap) : ''}</span></div>${s.cap ? meter(s.worst, s.cap) : ''}`
       + `<div class="ri-top small"><span class="grow muted">${s.used}/${nOutlets(s.dev)} outlets</span><span class="muted">worst case ${fmtW(s.worst)}</span></div></div>`).join('');
   }
@@ -595,7 +674,7 @@ function devicePropsHTML(rack, dev) {
   const placement = z ? `<div class="grid2">
       <label>Side<select data-f="side">${opt('left', 'Left', dev.side)}${opt('right', 'Right', dev.side)}</select></label>
       <label>Faces<select data-f="mount">${opt('rear', 'Rear', dev.mount)}${opt('front', 'Front', dev.mount)}</select></label>
-      <label>Length (${u})<input data-f="length" type="number" step="any" min="0" value="${toDisp(dev.length || T_(dev).len)}"></label>
+      <label>Length (${u})<input data-f="length" type="number" step="any" min="0" value="${toDisp(zLen(dev))}"></label>
       <label>From the top (${u})<input data-f="offset" type="number" step="any" min="0" value="${toDisp(dev.offset || 0)}"></label>
     </div>` : `<div class="grid2">
       <label>Height (U)<input data-f="h" type="number" min="1" max="${rack.units}" value="${dev.h}"></label>
@@ -621,7 +700,7 @@ function devicePropsHTML(rack, dev) {
     </div>` : '';
   const stats = [
     ['Occupies', z ? `0U · ${dev.side} side` : `U${dev.u}${dev.h > 1 ? '–' + (dev.u + dev.h - 1) : ''}${isHalf(dev) ? ' · half' : ''}`],
-    ['Size', z ? `${fmt(dev.length || T_(dev).len)} long` : `${fmt(dev.h * U_MM)} × ${fmt(dev.depth)} deep`],
+    ['Size', z ? `${fmt(zLen(dev))} long` : `${fmt(dev.h * U_MM)} × ${fmt(dev.depth)} deep`],
     total ? ['Ports in use', `${used} of ${total}`] : null,
     src ? ['Load', `${fmtW(src.normal)}${src.cap ? ' of ' + fmtW(src.cap) : ''} · worst ${fmtW(src.worst)}`] : null,
     watts(dev) ? ['Heat', `${btu(watts(dev))} BTU/h`] : null,
@@ -679,7 +758,11 @@ function rackPropsHTML(r) {
 }
 function cablePropsHTML(c) {
   const t = ctype(c.type), A = findDev(c.a), B = findDev(c.b), kind = portKind(c.pa);
-  const len = cableLengths()[c.id] || 0, std = stdLength(len, kind), warn = cableCheck(c);
+  const len = cableLengths()[c.id] || 0, std = stdLength(len, kind), warn = cableCheck(c), room = runPairs(c).length;
+  const run = room ? `<h4>Patch run</h4><div class="row run-row">
+      <label>Next<input type="number" data-run min="1" max="${room}" value="${Math.min(room, 11)}"></label>
+      <button data-act="run" title="Repeat this cable on the following port pairs">Add cables</button>
+      <span class="muted">up to ${room} more</span></div>` : '';
   return `<div class="stack">
     <label>Type<select data-f="type">${cableTypeOptions(c.type)}</select></label>
     <div class="color-row"><span>Color</span><input type="color" data-f="color" value="${cableColor(c)}"><button data-act="resetColor"${c.color ? '' : ' disabled'}>Use type color</button></div>
@@ -694,6 +777,7 @@ function cablePropsHTML(c) {
     <label>Notes<textarea data-f="notes" rows="2">${esc(c.notes || '')}</textarea></label>
     <dl class="kv"><dt>Estimated length</dt><dd>≈ ${fmtLong(len)} · ${fmt(len, 'in')}</dd><dt>Stock ${t.kind === 'power' ? 'power cord' : 'patch cord'}</dt><dd>${std ? fmtStd(std) : 'custom length'}</dd></dl>
     ${warn ? `<p class="warn">⚠ ${esc(warn)}</p>` : ''}
+    ${run}
     <p class="hint">Length follows the drawn route plus 10 % slack. Drag either end in the 2D view to plug it into another port.</p>
     <div class="row"><button data-act="del" class="danger">Delete</button></div>
   </div>`;
@@ -792,7 +876,7 @@ function updateDevice(id, f, raw) {
   }
   else if (f === 'h' || f === 'u') next[f] = Math.max(1, Math.round(+raw) || 1);
   else if (f in ints) next[f] = clamp(Math.round(+raw) || 0, ...ints[f]);
-  else if (['depth', 'length', 'offset'].includes(f)) next[f] = Math.max(f === 'offset' ? 0 : 5, fromDisp(+raw || 0));
+  else if (['depth', 'length', 'offset'].includes(f)) next[f] = Math.max({ offset: 0, length: ZERO_U_MIN, depth: 5 }[f], fromDisp(+raw || 0));
   else if (['watts', 'capacity', 'weight'].includes(f)) next[f] = Math.max(0, +raw || 0);
   else if (['hostname', 'ip', 'serial', 'notes'].includes(f)) next[f] = String(raw).trim();
   else if (f === 'half' || f === 'feed') { if (raw) next[f] = raw; else delete next[f]; }
@@ -814,11 +898,11 @@ function updateRack(id, f, raw) {
   if (f === 'maxLoad') return mutate(() => (r.maxLoad = Math.max(0, +raw || 0)));
   if (f === 'units') {
     const n = clamp(Math.round(+raw) || 1, 1, 100);
-    const over = r.devices.find(d => (isZeroU(d) ? (d.offset || 0) + (d.length || T_(d).len) > n * U_MM : d.u + d.h - 1 > n));
+    const over = r.devices.find(d => (isZeroU(d) ? (d.offset || 0) + zLen(d) > n * U_MM : d.u + d.h - 1 > n));
     if (over) { toast(`“${over.name}” sits above U${n}. Move it first`); return renderProps(); }
     return mutate(() => (r.units = n));
   }
-  if (f === 'width') return mutate(() => (r.width = Math.max(PANEL_W + 20, fromDisp(+raw || 0))));
+  if (f === 'width') return mutate(() => (r.width = Math.max(MIN_RACK_W, fromDisp(+raw || 0))));
   if (f === 'depth') return mutate(() => (r.depth = Math.max(2 * RAIL_INSET + 50, fromDisp(+raw || 0))));
 }
 function updateMulti(f, raw) {
@@ -870,6 +954,10 @@ propsEl.addEventListener('click', e => {
     }
     return deleteSel(true);
   }
+  if (s.kind === 'cable' && act === 'run') {
+    const c = doc.cables.find(c => c.id === s.id), n = Math.round(+propsEl.querySelector('[data-run]').value);
+    return c && n >= 1 && continueRun(c, n);
+  }
   if (s.kind === 'device') {
     if (act === 'up' || act === 'down') return shiftDevs([s.id], act === 'up' ? 1 : -1);
     if (act === 'dup') return duplicateSel();
@@ -881,9 +969,14 @@ propsEl.addEventListener('click', e => {
     if (act === 'right' && i < doc.racks.length - 1) mutate(() => doc.racks.splice(i + 1, 0, doc.racks.splice(i, 1)[0]));
     if (act === 'dup') {
       const copy = { ...JSON.parse(JSON.stringify(r)), id: uid(), name: r.name + ' copy', code: '' };
-      copy.devices.forEach(d => (d.id = uid()));
+      const ids = new Map();
+      copy.devices.forEach(d => { const n = uid(); ids.set(d.id, n); d.id = n; });
+      // cables between devices of this rack come along; cables to other racks stay put
+      const cables = doc.cables.filter(c => ids.has(c.a) && ids.has(c.b))
+        .map(c => ({ ...JSON.parse(JSON.stringify(c)), id: uid(), a: ids.get(c.a), b: ids.get(c.b), label: '' }));
       ui.sel = { kind: 'rack', id: copy.id };
-      mutate(() => doc.racks.splice(i + 1, 0, copy));
+      mutate(() => { doc.racks.splice(i + 1, 0, copy); doc.cables.push(...cables); });
+      if (cables.length) toast(`Duplicated ${r.name} with ${cables.length} cable${cables.length > 1 ? 's' : ''} inside it`);
     }
   }
 });
@@ -925,7 +1018,7 @@ rackForm.addEventListener('submit', e => {
   const r = makeRack({
     name: rackForm.name.value.trim() || nextRackName(),
     units: clamp(Math.round(+rackForm.units.value) || 42, 1, 100),
-    width: Math.max(PANEL_W + 20, formMM.width),
+    width: Math.max(MIN_RACK_W, formMM.width),
     depth: Math.max(2 * RAIL_INSET + 50, formMM.depth),
   });
   delete rackForm.name.dataset.touched;
@@ -1077,13 +1170,16 @@ function searchItems(q) {
     const hay = [cableLabel(c), c.notes, ctype(c.type).name].filter(Boolean).join(' ').toLowerCase();
     if (hay.includes(q)) res.push({ kind: 'cable', id: c.id, title: cableLabel(c), sub: ctype(c.type).name });
   }
-  return res.slice(0, 14);
+  return res;
 }
+const SEARCH_MAX = 14;
 function renderSearch() {
-  searchHits = searchItems(searchIn.value);
+  const all = searchItems(searchIn.value);
+  searchHits = all.slice(0, SEARCH_MAX);
   searchActive = clamp(searchActive, 0, Math.max(0, searchHits.length - 1));
   searchRes.hidden = !searchIn.value.trim();
   searchRes.innerHTML = searchHits.length ? searchHits.map((h, i) => `<button class="sr${i === searchActive ? ' on' : ''}" data-i="${i}"><span class="tag">${h.kind}</span><span class="grow"><span class="ci-main">${esc(h.title)}</span><span class="ci-sub">${esc(h.sub)}</span></span></button>`).join('')
+      + (all.length > SEARCH_MAX ? `<div class="empty">Showing ${SEARCH_MAX} of ${all.length} · keep typing to narrow it down</div>` : '')
     : '<div class="empty">No matches</div>';
 }
 /* select something and bring it into view */
@@ -1133,7 +1229,7 @@ $('#routeSeg').addEventListener('click', e => {
   if (b) { doc.settings.route = b.dataset.route; save(); if (!ui.userMoved) fit(); renderAll(); }
 });
 $('#tidyBtn').addEventListener('click', () => {
-  const t0 = performance.now(), res = optimizeRoutes();
+  const t0 = performance.now(), res = optimizeRoutes(undefined, doc.routeOrder || {});   // carry on from the last tidy
   if (res.after >= res.before && doc.routeOrder) return toast(`Already tidy: ${res.before} crossing${res.before === 1 ? '' : 's'}`);
   mutate(() => (doc.routeOrder = res.orders));
   toast(`Tidied: ${res.before} → ${res.after} crossing${res.after === 1 ? '' : 's'} (${Math.round(performance.now() - t0)} ms)`);
@@ -1207,7 +1303,7 @@ applyTheme();
 /* help */
 const helpDlg = $('#helpDlg');
 $('#helpBtn').addEventListener('click', () => helpDlg.showModal());
-helpDlg.addEventListener('click', e => { if (e.target === helpDlg || e.target.closest('[data-close]')) helpDlg.close(); });
+helpDlg.addEventListener('click', e => { if (outsideDialog(helpDlg, e) || e.target.closest('[data-close]')) helpDlg.close(); });
 
 /* empty state */
 $('#emptyAdd').addEventListener('click', () => {
@@ -1225,6 +1321,7 @@ for (const d of document.querySelectorAll('details.sec')) {
 
 /* ================= keyboard ================= */
 document.addEventListener('keydown', e => {
+  if (document.querySelector('dialog[open]')) return;   // the dialog handles its own keys (Esc closes it)
   const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName);
   const key = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;
   if (mod && key === 'k') { e.preventDefault(); return searchIn.focus(); }
@@ -1285,6 +1382,7 @@ function renderAll() {
   renderLegend();
   $('#empty').hidden = doc.racks.length > 0;
   if (!doc.racks.length && rackForm.hidden === false) showRackForm(false);
+  ui.shownSel = selNow();
   $('#undoBtn').disabled = !undoStack.length;
   $('#redoBtn').disabled = !redoStack.length;
   renderStage();
@@ -1302,6 +1400,20 @@ new ResizeObserver(() => {
   if (ui.view === '2d') draw2D();
 }).observe(stage);
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderAll);
+/* another tab saved the layout: follow it instead of overwriting it with an older copy on the next edit */
+window.addEventListener('storage', e => {
+  if (e.key !== STORE_KEY || !e.newValue) return;
+  let d;
+  try { d = JSON.parse(e.newValue); } catch { return; }
+  if (!validDoc(d)) return;
+  pushUndo();   // undo goes back to what this tab had
+  ui.drag = null; ui.marquee = null; ui.pending = null; cancelRewire();
+  doc = normalize(d);
+  ensurePorts();
+  unitSel.value = ui.unit;
+  renderAll();
+  toast('Updated with changes made in another tab');
+});
 
 ensurePorts();
 save();

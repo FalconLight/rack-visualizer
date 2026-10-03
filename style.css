@@ -131,6 +131,9 @@ label input, label select { color: var(--fg); }
 .stack { display: flex; flex-direction: column; gap: 10px; }
 .row { display: flex; gap: 6px; flex-wrap: wrap; }
 .row.end { justify-content: flex-end; }
+.run-row { align-items: flex-end; }
+.run-row label { width: 76px; }
+.run-row .muted { align-self: center; font-size: 12px; }
 .card { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); margin-top: 6px; }
 .hint { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
 .muted { color: var(--muted); }
@@ -150,7 +153,10 @@ label input, label select { color: var(--fg); }
 .empty { color: var(--muted); font-size: 12px; padding: 4px 0; }
 .list-sub { margin: 12px 0 4px; }
 
-.rack-item { flex-direction: column; align-items: stretch; gap: 5px; }
+.rack-item { flex-direction: column; align-items: stretch; gap: 5px; cursor: grab; }
+.rack-item.dragging { opacity: .45; }
+.rack-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.rack-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
 .rack-item .ri-top { display: flex; gap: 8px; align-items: baseline; }
 .meter { height: 4px; border-radius: 2px; background: var(--seg-bg); overflow: hidden; }
 .meter i { display: block; height: 100%; border-radius: 2px; background: var(--accent); }
@@ -276,12 +282,16 @@ kbd {
 .dev.pending .dev-body { fill: var(--accent-soft); }
 .dev.dragging { opacity: .3; }
 .scene .dev-label { font-size: 10.5px; dominant-baseline: central; }
+.scene .pt-num { font-size: 5px; font-weight: 600; fill: var(--muted); text-anchor: middle; dominant-baseline: central; letter-spacing: -.2px; }
+.scene .pt-num.used { fill: #fff; }
 .scene .dev-meta { font-size: 10.5px; fill: var(--muted); text-anchor: end; dominant-baseline: central; }
 
 .cable { fill: none; stroke-width: 2.2; vector-effect: non-scaling-stroke; stroke-linecap: round; pointer-events: none; }
 .cable.back { stroke-dasharray: 6 4; }
 .cable.sel { stroke-width: 4.5; }
-.cable-hit { fill: none; stroke: transparent; stroke-width: 14; vector-effect: non-scaling-stroke; cursor: pointer; }
+.cable-hit { fill: none; stroke: transparent; stroke-width: 10; vector-effect: non-scaling-stroke; cursor: pointer; }
+/* cables never get in the way of the ports you are clicking or the distance you are measuring */
+#stage:not([data-mode="select"]) .cable-hit { pointer-events: none; }
 .cable-hit:hover + .cable { stroke-width: 3.5; }
 .port { stroke: var(--dev); stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
 

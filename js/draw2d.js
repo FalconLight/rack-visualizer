@@ -80,6 +80,7 @@ function sceneSVG(o) {
       s += `<text class="dev-label" x="${vx + 16}" y="${b.y + b.h / 2}">${esc(clip(d.name, Math.max(3, Math.floor(room / 5.6))))}</text>`;
       if (!pl.length) s += `<text class="dev-meta" x="${vx + b.w - 12}" y="${b.y + b.h / 2}">${d.h}U${near ? '' : ' · back'}</text>`;
     }
+    const nums = live && PORT * k >= 15;   // close enough to read port numbers
     for (const p of pl) {
       const c = used[d.id]?.[p.key], rt = live && ui.rewire?.target;
       const drop = rt && rt.dev === d.id && rt.key === p.key ? (rt.err ? ' drop-bad' : ' drop-ok') : '';
@@ -87,12 +88,12 @@ function sceneSVG(o) {
       s += `<rect class="pt${p.up ? ' up' : ''}${p.power ? ' pwr' : ''}${c ? ' used' : ''}${drop}"${col ? ` style="fill:${col};stroke:${col}"` : ''}`
         + ` data-port="${p.key}" x="${VR(p.x, p.w)}" y="${p.y}" width="${p.w}" height="${p.h}"${p.power ? ' rx="3.5"' : ''}>`
         + `<title>${esc(portLabel(d, p.key))}${c ? ' · in use' + (live ? ', drag to move the cable' : '') : ''}</title></rect>`;
+      if (nums) s += `<text class="pt-num${c ? ' used' : ''}" x="${VR(p.x, p.w) + p.w / 2}" y="${p.y + p.h / 2}">${p.key.slice(1)}</text>`;
     }
     s += '</g>';
   }
 
   if (o.cables !== false) s += cablesSVG(L, port, o, X, VR);
-  if (live) s += overlaysSVG(L, k, face, X, VR);
   return s;
 }
 
@@ -112,16 +113,12 @@ function cablesSVG(L, port, o, X, VR) {
     s += `<g data-cable="${c.id}" data-layer="${esc(layer)}">`;
     if (live) s += `<path class="cable-hit" d="${d}"/>`;
     s += `<path class="cable${t.kind === 'power' ? ' power' : ''}${partial ? ' back' : ''}${live && isSel('cable', c.id) ? ' sel' : ''}${moving ? ' ghosted' : ''}${cableCheck(c) ? ' warn' : ''}" style="stroke:${col}" d="${d}"><title>${esc(cableLabel(c))}</title></path>`;
-    for (const [P, Q] of [[a, A], [b, B]]) if (P.side === face) s += `<circle class="port" style="fill:${col}" cx="${Q.x}" cy="${Q.y}" r="6"/>`;
+    // the plug dot; left out when port numbers show, as the port itself is already in the cable's colour
+    if (!(live && PORT * k >= 15)) for (const [P, Q] of [[a, A], [b, B]]) if (P.side === face) s += `<circle class="port" style="fill:${col}" cx="${Q.x}" cy="${Q.y}" r="6"/>`;
     if (o.labels) for (const [P, Q, other] of [[a, A, b], [b, B, a]])
       if (P.side === face) s += `<text class="clabel" x="${Q.x + 7}" y="${Q.y - 8}">${esc(c.label || endLabel(other.dev.id, other.key))}</text>`;
     s += '</g>';
-    if (moving) {
-      const end = ui.rewire.end, tg = ui.rewire.target, f = tg && !tg.err && findDev(tg.dev);
-      const tp = f && portLayout(L, f.rack, f.dev).find(q => q.key === tg.key);
-      const m = tp ? { x: VR(tp.x, tp.w) + tp.w / 2, y: tp.y + tp.h / 2 } : ui.hover || (end === 'a' ? A : B);
-      s += `<path class="cable preview" style="stroke:${col}" d="${bezPath(end === 'a' ? cableCurve(m, B) : cableCurve(A, m))}"/>`;
-    } else if (live && isSel('cable', c.id) && ui.mode === 'select') {
+    if (!moving && live && isSel('cable', c.id) && ui.mode === 'select') {   // (the moving end is drawn in the overlays)
       for (const [e, P, Q] of [['a', a, A], ['b', b, B]]) if (P.side === face)
         handles += `<circle class="end-handle" data-end="${e}" data-cid="${c.id}" cx="${Q.x}" cy="${Q.y}" r="${7 / k}"><title>Drag to move this end to another port</title></circle>`;
     }
@@ -131,6 +128,17 @@ function cablesSVG(L, port, o, X, VR) {
 
 function overlaysSVG(L, k, face, X, VR) {
   let s = '';
+  const c = ui.rewire?.moved && doc.cables.find(c => c.id === ui.rewire.cid);
+  if (c) {   // the cable end being moved follows the pointer, or snaps to the port under it
+    const port = portMap(L), a = port(c.a, c.id, c.pa), b = port(c.b, c.id, c.pb);
+    if (a && b && (a.side === face || b.side === face)) {
+      const A = { x: X(a.x), y: a.y }, B = { x: X(b.x), y: b.y }, end = ui.rewire.end;
+      const tg = ui.rewire.target, f = tg && !tg.err && findDev(tg.dev);
+      const tp = f && portLayout(L, f.rack, f.dev).find(q => q.key === tg.key);
+      const m = tp ? { x: VR(tp.x, tp.w) + tp.w / 2, y: tp.y + tp.h / 2 } : ui.hover || (end === 'a' ? A : B);
+      s += `<path class="cable preview" style="stroke:${cableColor(c)}" d="${bezPath(end === 'a' ? cableCurve(m, B) : cableCurve(A, m))}"/>`;
+    }
+  }
   if (ui.pending && ui.hover) {
     const f = findDev(ui.pending);
     if (f) {
@@ -172,13 +180,30 @@ function overlaysSVG(L, k, face, X, VR) {
 }
 
 /* ---------- live view ---------- */
+/* Two layers: the scene (racks, devices, cables), rebuilt when something in it changes or the zoom
+   changes, and the overlays (hover line, measure, box, pending cable), cheap enough for every pointer move. */
+let drawnK = 0;
+const camTransform = () => `translate(${ui.cam.x},${ui.cam.y}) scale(${ui.cam.k})`;
+function overlayMarkup() {
+  const L = layout(), { X, VR } = viewMap(L, ui.face);
+  return overlaysSVG(L, ui.cam.k, ui.face, X, VR);
+}
 function draw2D() {
   if (ui.view !== '2d') return;
-  if (!doc.racks.length) { svg.innerHTML = ''; return; }
+  if (!doc.racks.length) { svg.innerHTML = ''; drawnK = 0; return; }
   const k = ui.cam.k;
-  svg.innerHTML = `<g transform="translate(${ui.cam.x},${ui.cam.y}) scale(${k})">`
-    + sceneSVG({ face: ui.face, k, live: true, labels: doc.settings.showLabels }) + '</g>';
+  svg.innerHTML = `<g id="camG" transform="${camTransform()}"><g>`
+    + sceneSVG({ face: ui.face, k, live: true, labels: doc.settings.showLabels })
+    + `</g><g id="overlayG">${overlayMarkup()}</g></g>`;
+  drawnK = k;
   $('#zoomLbl').textContent = Math.round(k / (ui.fitK || k) * 100) + '%';
+}
+/* pan and overlays only; falls back to a full redraw when the zoom changed */
+function drawLight() {
+  const cam = $('#camG', svg);
+  if (ui.view !== '2d' || !cam || ui.cam.k !== drawnK) return draw2D();
+  cam.setAttribute('transform', camTransform());
+  $('#overlayG', svg).innerHTML = overlayMarkup();
 }
 /* screen point → view coordinates (mirrored in the rear view) */
 function toWorld(e) {
@@ -192,10 +217,12 @@ function fit() {
   const L = layout(), r = svg.getBoundingClientRect();
   if (!r.width || !r.height) return;
   const ortho = doc.settings.route === 'ortho';
-  const under = ortho ? doc.cables.filter(c => (c.via || doc.settings.via) === 'bottom').length : 0;
+  // only cables between racks use the overhead / underfloor trays
+  const between = ortho ? doc.cables.filter(c => { const A = findDev(c.a), B = findDev(c.b); return A && B && A.rack !== B.rack; }) : [];
+  const under = between.filter(c => (c.via || doc.settings.via) === 'bottom').length, over = between.length - under;
   // margins for the ruler labels, the legend and the zoom controls are in screen pixels,
   // so they depend on the scale: iterate a few times to settle it
-  const top = Math.min(...Object.values(L.racks).map(R => R.top), L.h) - (ortho ? 110 + doc.cables.length * LANE : 90);
+  const top = Math.min(...Object.values(L.racks).map(R => R.top), L.h) - (ortho ? 110 + over * LANE : 90);
   const bottom = L.h + (under ? 60 + under * LANE : 30);
   const x1 = Math.max(L.w, 600) + 60;
   let k = 0.2, x0 = -260, y0 = top, y1 = bottom;
@@ -272,9 +299,16 @@ function hud() {
   hudEl.textContent = t;
 }
 
-let rafPending = false;
-function schedule() {
+/* light: only the camera or the overlays changed (see drawLight) */
+let rafPending = false, rafFull = false;
+function schedule(light = false) {
+  if (!light) rafFull = true;
   if (rafPending) return;
   rafPending = true;
-  requestAnimationFrame(() => { rafPending = false; draw2D(); hud(); });
+  requestAnimationFrame(() => {
+    const full = rafFull;
+    rafPending = false; rafFull = false;
+    if (full) draw2D(); else drawLight();
+    hud();
+  });
 }

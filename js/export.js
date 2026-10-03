@@ -263,7 +263,9 @@ async function svgToPng(svgText, bb, width) {
     g.fillStyle = '#ffffff';
     g.fillRect(0, 0, canvas.width, canvas.height);
     g.drawImage(img, 0, 0, canvas.width, canvas.height);
-    return await new Promise(res => canvas.toBlob(res, 'image/png'));
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+    if (!blob) throw new Error('the image is too large for this browser. Pick a smaller width');
+    return blob;
   } finally { URL.revokeObjectURL(url); }
 }
 
@@ -281,7 +283,13 @@ function syncExportForm() {
   exportForm.querySelector('[data-for="png"]').hidden = !png;
 }
 exportForm.format.addEventListener('change', syncExportForm);
-exportDlg.addEventListener('click', e => { if (e.target === exportDlg || e.target.closest('[data-close]')) exportDlg.close(); });
+/* the backdrop and the dialog's own padding are the same element: only a click outside the box closes it */
+function outsideDialog(dlg, e) {
+  if (e.target !== dlg) return false;
+  const r = dlg.getBoundingClientRect();
+  return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+}
+exportDlg.addEventListener('click', e => { if (outsideDialog(exportDlg, e) || e.target.closest('[data-close]')) exportDlg.close(); });
 exportForm.addEventListener('submit', async e => {
   e.preventDefault();
   const f = exportForm, fmtSel = f.format.value;
@@ -306,7 +314,11 @@ exportForm.addEventListener('submit', async e => {
 /* ---------- bill of materials (CSV) ---------- */
 function exportCSV() {
   const lens = cableLengths(), pm = powerModel(), rows = [];
-  const q = v => { const s = String(v ?? ''); return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const q = v => {
+    let s = String(v ?? '');
+    if (typeof v === 'string' && /^[=+\-@\t\r]/.test(s)) s = "'" + s;   // text that a spreadsheet would run as a formula
+    return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
   const m = mm => (mm / 1000).toFixed(2);
   rows.push(['Racks'], ['Rack', 'Height (U)', 'Used (U)', 'Width (mm)', 'Depth (mm)', 'Power (W)', 'Heat (BTU/h)', 'Weight (kg)', 'Max load (kg)']);
   for (const r of pm.racks) rows.push([r.rack.name, r.rack.units, usedU(r.rack), r.rack.width, r.rack.depth, Math.round(r.watts), r.btu, +r.kg.toFixed(1), r.maxKg]);

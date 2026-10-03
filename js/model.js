@@ -13,6 +13,8 @@ const BODY_W = 440;                       // typical chassis width
 const FRAME_TOP = 60, FRAME_BOT = 80;     // rack structure above / below the rails
 const RAIL_INSET = 60;                    // rails distance from front / rear of the rack
 const ZERO_U_W = 22;                      // drawn width of a vertical (0U) PDU
+const ZERO_U_MIN = 200;                   // shortest vertical PDU
+const MIN_RACK_W = 540;                   // narrowest rack that leaves room for the rails and a vertical PDU
 const PORT = 12, PITCH = 14, PORTS_PAD = 8; // port square, port spacing, right margin
 const STORE_KEY = 'rackviz.v1';
 const UNIT_MM = { mm: 1, cm: 10, in: IN_MM };
@@ -169,7 +171,7 @@ function validDoc(d) { return d && Array.isArray(d.racks) && Array.isArray(d.cab
 function normalize(d) {
   d.settings = { unit: 'cm', gap: 300, route: 'ortho', via: 'top', catColors: {}, labelPattern: '{rack}-U{u}-{port}',
     showLabels: false, templates: [], ...(d.settings || {}) };
-  const types = Array.isArray(d.settings.cableTypes) ? d.settings.cableTypes : [];
+  const types = Array.isArray(d.settings.cableTypes) ? d.settings.cableTypes.filter(t => t && typeof t === 'object') : [];
   for (const t of types) {
     const def = DEFAULT_CABLE_TYPES.find(x => x.id === t.id);
     t.kind ||= def?.kind || 'data';
@@ -181,14 +183,144 @@ function normalize(d) {
   }
   d.settings.cableTypes = types;
   if (!Array.isArray(d.settings.templates)) d.settings.templates = [];
-  for (const r of d.racks) r.devices ||= [];
+  d.racks = d.racks.filter(r => r && typeof r === 'object');
+  for (const r of d.racks) r.devices = Array.isArray(r.devices) ? r.devices.filter(v => v && typeof v === 'object') : [];
+  d.cables = d.cables.filter(c => c && typeof c === 'object');
+  sanitize(d);
   return d;
 }
+
+/* Layouts can come from files other people made: everything that ends up in the page is
+   checked here, so ids, colours and choices are always plain, known values. */
+const ID_RE = /^[\w-]{1,40}$/, COLOR_RE = /^#[0-9a-f]{6}$/i, PORT_RE = /^[puio]\d{1,3}$/;
+function sanitize(d) {
+  const str = (v, max = 500) => (v == null ? '' : String(v).slice(0, max));
+  const numOr = (v, def, lo = -Infinity, hi = Infinity) => (Number.isFinite(+v) && v !== '' && v !== null ? clamp(+v, lo, hi) : def);
+  const pick = (v, list) => (list.includes(v) ? v : undefined);
+  const color = v => (COLOR_RE.test(v) ? v : undefined);
+  const setOpt = (o, k, v) => { if (v === undefined || v === '') delete o[k]; else o[k] = v; };
+  /* fresh ids for missing, malformed or repeated ones; returns old → new */
+  const fixIds = list => {
+    const seen = new Set(), map = new Map();
+    for (const o of list) {
+      const old = o.id;
+      const bad = typeof old !== 'string' || !ID_RE.test(old);
+      if (bad || seen.has(old)) {   // references to a repeated id keep pointing at its first owner
+        o.id = uid();
+        if (bad && old != null && !map.has(String(old))) map.set(String(old), o.id);
+      }
+      seen.add(o.id);
+    }
+    return map;
+  };
+  const s = d.settings;
+  s.unit = pick(s.unit, Object.keys(UNIT_MM)) || 'cm';
+  s.route = pick(s.route, ['curve', 'ortho']) || 'ortho';
+  s.via = pick(s.via, ['top', 'bottom']) || 'top';
+  s.gap = numOr(s.gap, 300, 0, 20000);
+  s.labelPattern = str(s.labelPattern, 100) || '{rack}-U{u}-{port}';
+  s.showLabels = !!s.showLabels;
+  const cats = {};
+  for (const [k] of CATS) if (color(s.catColors?.[k])) cats[k] = s.catColors[k];
+  s.catColors = cats;
+
+  /* cable types: valid ids and colours, and at least one data and one power type */
+  const typeMap = fixIds(s.cableTypes);
+  for (const t of s.cableTypes) {
+    t.kind = pick(t.kind, ['data', 'power']) || 'data';
+    t.name = str(t.name, 60) || 'Cable';
+    t.color = color(t.color) || '#888888';
+    if (t.fits !== undefined) t.fits = Array.isArray(t.fits) ? t.fits.filter(f => typeof f === 'string' && ID_RE.test(f)) : [];
+  }
+  for (const kind of ['data', 'power']) {
+    if (s.cableTypes.some(t => t.kind === kind)) continue;
+    for (const def of DEFAULT_CABLE_TYPES.filter(t => t.kind === kind))
+      s.cableTypes.push({ ...def, id: s.cableTypes.some(t => t.id === def.id) ? uid() : def.id, fits: [...def.fits] });
+  }
+
+  const cleanDev = v => {
+    v.type = typeof v.type === 'string' && TYPES[v.type] ? v.type : 'custom';
+    const t = TYPES[v.type];
+    v.name = str(v.name, 120) || t.label;
+    v.mount = pick(v.mount, ['front', 'rear']) || (t.zeroU ? 'rear' : 'front');
+    v.h = t.zeroU ? 0 : Math.round(numOr(v.h, t.h, 1, 100));
+    v.u = Math.round(numOr(v.u, 1, 0, 100));
+    v.depth = numOr(v.depth, t.d, 5, 5000);
+    if (t.zeroU) {
+      v.side = pick(v.side, ['left', 'right']) || 'left';
+      v.offset = numOr(v.offset, 0, 0, 100 * U_MM);
+      v.length = numOr(v.length, t.len, ZERO_U_MIN, 100 * U_MM);
+    }
+    for (const [k, max] of [['ports', 96], ['uplinks', 16], ['inlets', 4], ['outlets', 48]]) setOpt(v, k, v[k] === undefined ? undefined : Math.round(numOr(v[k], 0, 0, max)));
+    for (const k of ['watts', 'capacity', 'weight']) setOpt(v, k, v[k] === undefined ? undefined : numOr(v[k], 0, 0, 1e6));
+    setOpt(v, 'portType', pick(v.portType, Object.keys(DATA_CONN)));
+    setOpt(v, 'uplinkType', pick(v.uplinkType, Object.keys(UPLINK_TYPES)));
+    setOpt(v, 'inletType', pick(v.inletType, Object.keys(POWER_CONN)));
+    setOpt(v, 'outletType', pick(v.outletType, Object.keys(POWER_CONN)));
+    setOpt(v, 'color', color(v.color));
+    setOpt(v, 'half', pick(v.half, ['left', 'right']));
+    setOpt(v, 'feed', pick(v.feed, ['A', 'B']));
+    for (const k of ['hostname', 'ip', 'serial']) setOpt(v, k, v[k] === undefined ? undefined : str(v[k], 120));
+    setOpt(v, 'notes', v.notes === undefined ? undefined : str(v.notes, 2000));
+  };
+  fixIds(d.racks);
+  const devMap = fixIds(d.racks.flatMap(r => r.devices));
+  for (const r of d.racks) {
+    r.name = str(r.name, 80) || 'Rack';
+    r.code = str(r.code, 20);
+    r.units = Math.round(numOr(r.units, 42, 1, 100));
+    r.width = numOr(r.width, 600, MIN_RACK_W, 5000);
+    r.depth = numOr(r.depth, 1000, 2 * RAIL_INSET + 50, 5000);
+    r.channel = pick(r.channel, ['both', 'left', 'right']) || 'both';
+    setOpt(r, 'maxLoad', r.maxLoad === undefined ? undefined : numOr(r.maxLoad, 800, 0, 1e6));
+    r.devices.forEach(cleanDev);
+  }
+  fixIds(d.cables);
+  for (const c of d.cables) {
+    for (const e of ['a', 'b']) if (devMap.has(c[e])) c[e] = devMap.get(c[e]);
+    if (typeMap.has(c.type)) c.type = typeMap.get(c.type);
+    c.type = s.cableTypes.some(t => t.id === c.type) ? c.type : pickTypeId(s.cableTypes, /^[io]/.test(c.pa) ? 'power' : 'data');
+    for (const e of ['pa', 'pb']) c[e] = PORT_RE.test(c[e]) ? c[e] : '';
+    c.label = str(c.label, 120);
+    setOpt(c, 'notes', c.notes === undefined ? undefined : str(c.notes, 2000));
+    setOpt(c, 'color', color(c.color));
+    setOpt(c, 'via', pick(c.via, ['top', 'bottom']));
+  }
+  s.templates = s.templates.filter(t => t && typeof t === 'object' && t.fields && typeof t.fields === 'object');
+  fixIds(s.templates);
+  for (const t of s.templates) {
+    t.name = str(t.name, 120) || 'Template';
+    const v = { ...t.fields, type: t.type, name: t.name };
+    cleanDev(v);
+    t.type = v.type;
+    delete v.type; delete v.name; delete v.u; delete v.id;
+    if (!TYPES[t.type].zeroU) { delete v.side; delete v.offset; delete v.length; }
+    t.fields = v;
+  }
+  /* saved "Tidy" orders: { face: { lane: [cable ids] } } */
+  const ro = {};
+  for (const face of ['front', 'rear']) {
+    const src = d.routeOrder?.[face];
+    if (!src || typeof src !== 'object') continue;
+    ro[face] = {};
+    for (const [k, v] of Object.entries(src)) if (Array.isArray(v)) ro[face][k] = v.filter(id => typeof id === 'string');
+  }
+  if (d.routeOrder) d.routeOrder = ro;
+  return d;
+}
+const pickTypeId = (types, kind) => (types.find(t => t.kind === kind) || types[0]).id;
 function load() {
   try { const s = localStorage.getItem(STORE_KEY); if (s) { const d = JSON.parse(s); if (validDoc(d)) return normalize(d); } } catch (e) { /* ignore */ }
   return null;
 }
-function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(doc)); } catch (e) { /* ignore */ } }
+let saveFailed = false;
+function save() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(doc)); saveFailed = false; }
+  catch (e) {   // storage full or blocked: say so once, until saving works again
+    if (!saveFailed && typeof toast === 'function') toast('⚠ Couldn’t save in this browser (storage full or blocked). Use File → Save layout to keep a copy');
+    saveFailed = true;
+  }
+}
 
 let doc = load() || demoDoc();
 const ui = {
@@ -198,30 +330,43 @@ const ui = {
   get unit() { return doc.settings.unit; },
 };
 
+/* undo entries: the document plus what was selected, so undo puts you back where you were */
 const undoStack = [], redoStack = [];
-function mutate(fn) {
-  undoStack.push(JSON.stringify(doc));
+const selNow = () => ({ sel: ui.sel && { ...ui.sel }, multi: [...ui.multi] });
+const snapshot = (s = selNow()) => ({ doc: JSON.stringify(doc), ...s });
+function pushUndo() {
+  // the selection as last drawn: callers often pick the new selection just before mutating
+  undoStack.push(snapshot(ui.shownSel || selNow()));
   if (undoStack.length > 200) undoStack.shift();
   redoStack.length = 0;
+}
+function mutate(fn) {
+  pushUndo();
   fn();
   save();
   renderAll();
 }
-function undo() {
-  const s = undoStack.pop();
-  if (!s) return toast('Nothing to undo');
-  redoStack.push(JSON.stringify(doc));
-  doc = JSON.parse(s);
+/* display preferences aren't edits: undo and redo leave them as they are */
+const VIEW_PREFS = ['unit', 'route'];
+function restore(e) {
+  const keep = Object.fromEntries(VIEW_PREFS.map(k => [k, doc.settings[k]]));
+  doc = JSON.parse(e.doc);
+  Object.assign(doc.settings, keep);
+  ui.sel = e.sel; ui.multi = new Set(e.multi);   // renderAll drops whatever no longer exists
   save();
   renderAll();
 }
+function undo() {
+  const e = undoStack.pop();
+  if (!e) return toast('Nothing to undo');
+  redoStack.push(snapshot());
+  restore(e);
+}
 function redo() {
-  const s = redoStack.pop();
-  if (!s) return toast('Nothing to redo');
-  undoStack.push(JSON.stringify(doc));
-  doc = JSON.parse(s);
-  save();
-  renderAll();
+  const e = redoStack.pop();
+  if (!e) return toast('Nothing to redo');
+  undoStack.push(snapshot());
+  restore(e);
 }
 
 /* ---------- device accessors (fall back to the catalogue) ---------- */
@@ -247,6 +392,7 @@ const weight = d => +(d.weight ?? T_(d).kg ?? 0);
 const opp = s => (s === 'front' ? 'rear' : 'front');
 const rackMaxLoad = r => +(r.maxLoad ?? (r.units <= 15 ? 60 : 800));
 const devU = d => isZeroU(d) ? '0U' : d.h + 'U';
+const zLen = d => Math.max(ZERO_U_MIN, d.length || T_(d).len);   // vertical PDU length, as drawn and as checked
 
 /* ---------- geometry ---------- */
 const rackH = r => r.units * U_MM + FRAME_TOP + FRAME_BOT;
@@ -276,7 +422,7 @@ function devRect(L, rack, d) {
     // in the side channel, against the frame, clear of the rails and the U numbers
     const margin = (rack.width - PANEL_W) / 2 - 14;
     const w = Math.min(ZERO_U_W, Math.max(16, margin - 20));
-    const total = rack.units * U_MM, len = clamp(d.length || T_(d).len, 200, total);
+    const total = rack.units * U_MM, len = clamp(zLen(d), ZERO_U_MIN, total);
     const off = clamp(d.offset || 0, 0, total - len);
     const x = d.side === 'right' ? R.x + rack.width - 3 - w : R.x + 3;
     return { x, y: R.railTop + off, w, h: len, vertical: true };
@@ -292,12 +438,12 @@ const hspan = d => d.half === 'left' ? [0, 1] : d.half === 'right' ? [1, 2] : [0
 /* why `d` can't sit where it is (or null); `ignore` skips devices that move together */
 function conflict(rack, d, ignore = null) {
   if (isZeroU(d)) {
-    const total = rack.units * U_MM, len = d.length || T_(d).len, off = d.offset || 0;
+    const total = rack.units * U_MM, len = zLen(d), off = d.offset || 0;
     if (len > total + 0.5) return `Longer than the rails (${fmt(total)})`;
     if (off < -0.5 || off + len > total + 0.5) return 'Outside the rails';
     for (const o of rack.devices) {
       if (o.id === d.id || ignore?.has(o.id) || !isZeroU(o) || o.side !== d.side || o.mount !== d.mount) continue;
-      const oo = o.offset || 0, ol = o.length || T_(o).len;
+      const oo = o.offset || 0, ol = zLen(o);
       if (off < oo + ol && oo < off + len) return `Overlaps “${o.name}”`;
     }
     return null;
@@ -323,7 +469,7 @@ function nearestFree(rack, d, u0, maxDist = rack.units, ignore = null) {
 }
 /* a free side position for a vertical PDU */
 function freeZeroU(rack, d) {
-  const total = rack.units * U_MM, len = Math.min(d.length || T_(d).len, total);
+  const total = rack.units * U_MM, len = Math.min(zLen(d), total);
   for (const side of [d.side || 'left', d.side === 'right' ? 'left' : 'right'])
     for (let off = 0; off + len <= total + 0.5; off += U_MM)
       if (!conflict(rack, { ...d, side, offset: off, length: len })) return { side, offset: off, length: len };
@@ -407,7 +553,7 @@ function portGrid(d) {
     fits: n <= dCols * maxRows && nO <= oCols * maxRows };
 }
 function zeroUFits(d) {
-  const len = d.length || T_(d).len, n = nOutlets(d);
+  const len = zLen(d), n = nOutlets(d);
   return n <= 1 || (len - 40 - 2 * PITCH - PORT) / (n - 1) >= PITCH;
 }
 /* every port of a device, in front-view coordinates, with the face it is on */
@@ -502,9 +648,9 @@ function rackCode(r) {
 function endLabel(devId, key) {
   const f = findDev(devId); if (!f) return '?';
   const u = isZeroU(f.dev) ? 'V' + (f.dev.side === 'right' ? 'R' : 'L') : f.dev.u;
-  return (doc.settings.labelPattern || '{rack}-U{u}-{port}')
-    .replace(/\{rack\}/g, rackCode(f.rack)).replace(/\{u\}/g, u)
-    .replace(/\{port\}/g, portShort(key || '')).replace(/\{device\}/g, f.dev.name);
+  // function replacers, so a "$&" or "$1" in a name is kept as typed
+  const tokens = { rack: rackCode(f.rack), u, port: portShort(key || ''), device: f.dev.name };
+  return (doc.settings.labelPattern || '{rack}-U{u}-{port}').replace(/\{(rack|u|port|device)\}/g, (_, t) => tokens[t]);
 }
 const autoLabel = c => `${endLabel(c.a, c.pa)} ↔ ${endLabel(c.b, c.pb)}`;
 const cableLabel = c => c.label || autoLabel(c);

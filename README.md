@@ -8,6 +8,7 @@ A minimal tool to plan the space networking equipment takes up in racks.
 - **Cables** port to port, data and power (C13–C14, C19–C20, Schuko, NEMA), custom types and colors, compatibility warnings, auto labels and stock cord lengths; repeat a cable over the next ports for patch runs
 - **Diagram routing** through cable managers, side channels and overhead or underfloor trays, with a one-click “Tidy” that removes crossings
 - **Power budget**: load per PDU / UPS (normal and if a feed fails), A/B feed check, watts and BTU/h per rack, weight per rack
+- **Connection check**: small power and data lights on every device, and a check mode (<kbd>K</kbd>) that outlines what isn't connected and lists it. Power is followed along the chain from the PDUs / UPSs marked “Has building power”; devices can be marked as spare
 - **Views**: front and rear elevation, and 3D
 - **Exports**: PDF and SVG with layers (to scale, for CAD), PNG, and a CSV bill of materials
 - Search, port map, port numbers when zoomed in, multi-select, copy / paste, undo / redo, unit converter and measure tool

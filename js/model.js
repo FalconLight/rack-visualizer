@@ -70,7 +70,7 @@ const TYPES = {
 };
 const CATS = [['net', 'Network'], ['passive', 'Passive'], ['compute', 'Compute & KVM'], ['power', 'Power'], ['other', 'Other']];
 const DEV_FIELDS = ['ports', 'portType', 'uplinks', 'uplinkType', 'inlets', 'inletType', 'outlets', 'outletType',
-  'watts', 'capacity', 'weight', 'color', 'half', 'feed', 'hostname', 'ip', 'serial', 'notes'];
+  'watts', 'capacity', 'weight', 'color', 'half', 'feed', 'mains', 'spare', 'hostname', 'ip', 'serial', 'notes'];
 
 /* fits: connector families a cable plugs into; kind keeps data and power apart */
 const DEFAULT_CABLE_TYPES = [
@@ -145,7 +145,7 @@ function demoDoc() {
   const fw = put(a, 'firewall', 34, { hostname: 'fw-01', ip: '10.0.0.1' });
   const sv1 = put(a, 'server', 20, { name: 'Server 1', hostname: 'srv-01' });
   const sv2 = put(a, 'server', 18, { name: 'Server 2', hostname: 'srv-02' });
-  const ups = put(a, 'ups', 2, { outletType: 'c19' });
+  const ups = put(a, 'ups', 2, { outletType: 'c19', mains: true });
   const pdu = put(a, 'pdu', 1, { mount: 'rear', name: 'PDU B', feed: 'B' });
   const vp = put(a, 'vpdu', 0, { name: 'PDU A', side: 'right', offset: 120, length: 1500, feed: 'A' });
   const b = makeRack({ name: 'Rack B', units: 24, depth: 800 });
@@ -153,7 +153,7 @@ function demoDoc() {
   put(b, 'manager', 23);
   const s3 = put(b, 'switch', 22, { name: 'Edge switch' });
   const m = put(b, 'ont', 20, { name: 'Cable modem', uplinkType: 'f-coax' });
-  const pb = put(b, 'pdu', 21, { mount: 'rear', name: 'PDU' });
+  const pb = put(b, 'pdu', 21, { mount: 'rear', name: 'PDU', mains: true });
   put(b, 'shelf', 15, { h: 2 });
   d.racks.push(a, b);
   const cab = (type, x, y, pa, pb_) => ({ id: uid(), type, a: x.id, b: y.id, pa, pb: pb_, label: '' });
@@ -260,6 +260,7 @@ function sanitize(d) {
     setOpt(v, 'color', color(v.color));
     setOpt(v, 'half', pick(v.half, ['left', 'right']));
     setOpt(v, 'feed', pick(v.feed, ['A', 'B']));
+    for (const k of ['mains', 'spare']) setOpt(v, k, v[k] === true || undefined);
     for (const k of ['hostname', 'ip', 'serial']) setOpt(v, k, v[k] === undefined ? undefined : str(v[k], 120));
     setOpt(v, 'notes', v.notes === undefined ? undefined : str(v.notes, 2000));
   };
@@ -737,4 +738,65 @@ function powerModel() {
   });
   for (const r of racks) if (r.kg > r.maxKg) warnings.push({ level: 'bad', rack: r.rack.id, text: `${r.rack.name} carries ${fmtKg(r.kg)}, over its ${fmtKg(r.maxKg)} limit` });
   return { devs, feeds, sources, warnings, unpowered, racks, feedOf, load };
+}
+
+/* ---------- connection check ----------
+   Per device: power and data status, each 'ok' | 'partial' | 'none' | 'spare' | 'na' (nothing to connect),
+   with the reason. Power follows the chain: it starts at sources marked "has building power" (mains)
+   and reaches a device only through cabled outlets of live sources. */
+function connectionModel(pm = powerModel()) {
+  const use = portUse(), names = ids => [...new Set(ids)].map(id => `“${pm.devs[id].dev.name}”`).join(', ');
+  /* live sources: walk the power cables forward from the mains-fed ones (loops can't make power) */
+  const fedBy = {};
+  for (const [dst, fs] of Object.entries(pm.feeds)) for (const f of fs) (fedBy[f.src] ||= []).push(dst);
+  const live = new Set(Object.values(pm.devs).filter(({ dev }) => dev.mains && nOutlets(dev) > 0).map(({ dev }) => dev.id));
+  for (const queue = [...live]; queue.length;)
+    for (const dst of fedBy[queue.shift()] || []) if (!live.has(dst)) { live.add(dst); queue.push(dst); }
+
+  const devs = {}, problems = [];
+  for (const { rack, dev } of Object.values(pm.devs)) {
+    const n = nInlets(dev), isSrc = nOutlets(dev) > 0, fs = pm.feeds[dev.id] || [];
+    let power = 'na', pWhy = '';
+    if (dev.mains && isSrc) { power = 'ok'; pWhy = 'Has building power'; }
+    else if (n || isSrc) {
+      const liveIn = new Set(fs.filter(f => live.has(f.src)).map(f => f.inlet)), need = Math.max(1, n);
+      if (!fs.length) {
+        power = 'none';
+        pWhy = isSrc ? 'No input. Cable it to a source, or switch on “Has building power”'
+          : n > 1 ? `None of its ${n} power supplies is connected` : 'Power inlet not connected';
+      } else if (!liveIn.size) {
+        power = 'none';
+        const srcs = fs.map(f => f.src);
+        pWhy = `Plugged into ${names(srcs)}, which ${new Set(srcs).size > 1 ? 'have' : 'has'} no power`;
+      } else if (liveIn.size < need) {
+        power = 'partial';
+        const dead = new Set(fs.filter(f => !live.has(f.src)).map(f => f.src));
+        pWhy = `${liveIn.size} of ${need} power supplies powered`
+          + (dead.size ? ` (${names([...dead])} ${dead.size > 1 ? 'have' : 'has'} no power)` : '');
+      } else { power = 'ok'; pWhy = `Powered from ${names(fs.map(f => f.src))}`; }
+    }
+    const nd = nPorts(dev) + nUplinks(dev);
+    let data = 'na', dWhy = '';
+    if (nd) {
+      const used = Object.keys(use[dev.id] || {}).filter(k => k[0] === 'p' || k[0] === 'u');
+      if (!used.length) { data = 'none'; dWhy = 'No data cables'; }
+      else if (nUplinks(dev) && !used.some(k => k[0] === 'u')) { data = 'partial'; dWhy = `${used.length} of ${nd} data ports cabled, no uplink in use`; }
+      else { data = 'ok'; dWhy = `${used.length} of ${nd} data ports cabled`; }
+    }
+    if (dev.spare) {
+      if (power !== 'na') { power = 'spare'; pWhy = 'Spare: not checked'; }
+      if (data !== 'na') { data = 'spare'; dWhy = 'Spare: not checked'; }
+    }
+    const level = power === 'none' || data === 'none' ? 'bad' : power === 'partial' || data === 'partial' ? 'warn' : null;
+    devs[dev.id] = { power, pWhy, data, dWhy, level };
+    if (level) problems.push({ id: dev.id, rack, dev, power, pWhy, data, dWhy, level });
+  }
+  const cableIssues = doc.cables.map(c => ({ c, why: cableCheck(c) })).filter(x => x.why);
+  const all = Object.values(devs);
+  return {
+    devs, problems, cableIssues, live,
+    checked: all.filter(d => (d.power !== 'na' || d.data !== 'na') && d.power !== 'spare' && d.data !== 'spare').length,
+    spare: all.filter(d => d.power === 'spare' || d.data === 'spare').length,
+    bad: problems.filter(p => p.level === 'bad').length, warn: problems.filter(p => p.level === 'warn').length,
+  };
 }

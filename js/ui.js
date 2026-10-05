@@ -230,7 +230,7 @@ function duplicateSel() {
 function saveTemplate(dev) {
   const fields = { h: dev.h, depth: dev.depth, mount: dev.mount };
   if (isZeroU(dev)) fields.length = dev.length;
-  for (const k of DEV_FIELDS) if (dev[k] !== undefined && !['hostname', 'ip', 'serial', 'notes'].includes(k)) fields[k] = dev[k];
+  for (const k of DEV_FIELDS) if (dev[k] !== undefined && !['hostname', 'ip', 'serial', 'notes', 'spare'].includes(k)) fields[k] = dev[k];
   const t = { id: uid(), name: dev.name, type: dev.type, fields };
   mutate(() => doc.settings.templates.push(t));
   toast(`Saved “${dev.name}” as a template in the equipment list`);
@@ -625,6 +625,48 @@ powerEl.addEventListener('click', e => {
   if (d) { focusItem({ kind: 'device', id: d.dataset.dev }); } else if (r) select('rack', r.dataset.rack);
 });
 
+/* ---------- connection check ---------- */
+const checkEl = $('#checkPanel'), checkBtn = $('#checkBtn');
+function renderCheckPanel() {
+  const c = ui.conn, n = c.problems.length + c.cableIssues.length;
+  $('#checkCount').textContent = n ? '⚠ ' + n : '';
+  const dot = $('#checkDot');
+  dot.hidden = !n;
+  dot.classList.toggle('warn', !c.bad && !c.cableIssues.length);
+  checkBtn.setAttribute('aria-pressed', ui.check);
+  let h = `<div class="chk-sum"><span class="grow">${c.checked} device${c.checked === 1 ? '' : 's'} checked${c.spare ? ` · ${c.spare} spare` : ''}</span>`
+    + `<button class="small" data-chk="toggle" style="margin:0">${ui.check ? 'Leave check mode' : 'Check mode'}</button></div>`;
+  if (!n) h += `<p class="hint ok-text">✓ Every device has power and data${c.checked ? '' : ' (nothing to check yet)'}</p>`;
+  const row = p => {
+    const lamps = [p.power !== 'na' && p.power !== 'ok' && [p.power, 'Power: ' + p.pWhy], p.data !== 'na' && p.data !== 'ok' && [p.data, 'Data: ' + p.dWhy]].filter(Boolean);
+    return `<div class="chk-row" data-dev="${p.id}"><span class="lamp ${p.level === 'bad' ? 'none' : 'partial'}"></span>`
+      + `<span class="grow"><span class="ci-main">${esc(p.dev.name)} <span class="muted">· ${esc(p.rack.name)} ${isZeroU(p.dev) ? '0U' : 'U' + p.dev.u}</span></span>`
+      + lamps.map(([, t]) => `<span class="ci-sub">${esc(t)}</span>`).join('') + '</span></div>';
+  };
+  const group = (title, list) => (list.length ? `<div class="sub">${title} · ${list.length}</div>` + list.map(row).join('') : '');
+  h += group('Not connected', c.problems.filter(p => p.level === 'bad'));
+  h += group('Partly connected', c.problems.filter(p => p.level === 'warn'));
+  if (c.cableIssues.length) h += `<div class="sub">Cable problems · ${c.cableIssues.length}</div>` + c.cableIssues.map(({ c: cb, why }) =>
+    `<div class="chk-row" data-cable="${cb.id}"><span class="lamp partial"></span><span class="grow"><span class="ci-main">${esc(cableLabel(cb))}</span><span class="ci-sub">${esc(why)}</span></span></div>`).join('');
+  h += '<p class="hint" style="margin-top:8px">Power starts at a PDU or UPS with “Has building power” switched on. Tick “Spare / not in use” on a device to leave it out.</p>';
+  checkEl.innerHTML = h;
+}
+checkEl.addEventListener('click', e => {
+  if (e.target.closest('[data-chk="toggle"]')) return setCheck(!ui.check);
+  const d = e.target.closest('[data-dev]'), cb = e.target.closest('[data-cable]');
+  if (d) focusItem({ kind: 'device', id: d.dataset.dev });
+  else if (cb) focusItem({ kind: 'cable', id: cb.dataset.cable });
+});
+function setCheck(on) {
+  ui.check = on;
+  try { localStorage.setItem('rackviz.check', on ? '1' : '0'); } catch (e) { /* ignore */ }
+  if (on) $('details.sec[data-key="check"]').open = true;
+  renderAll();
+  if (on) toast(checkSummary());
+}
+checkBtn.addEventListener('click', () => setCheck(!ui.check));
+try { ui.check = localStorage.getItem('rackviz.check') === '1'; } catch (e) { /* ignore */ }
+
 /* ---------- properties ---------- */
 const opt = (v, label, cur) => `<option value="${esc(v)}"${String(v) === String(cur ?? '') ? ' selected' : ''}>${esc(label)}</option>`;
 const optsOf = (obj, cur) => Object.entries(obj).map(([k, v]) => opt(k, typeof v === 'string' ? v : v.label, cur)).join('');
@@ -670,7 +712,7 @@ function devicePropsHTML(rack, dev) {
   const u = ui.unit, z = isZeroU(dev), pm = ui.power, warn = devWarn(rack, dev);
   const src = pm.sources.find(s => s.dev.id === dev.id), feeds = pm.feeds[dev.id] || [];
   const pwarn = pm.warnings.filter(w => w.id === dev.id).map(w => w.text);
-  const used = Object.keys(portUse()[dev.id] || {}).length, total = allPortKeys(dev).length;
+  const used = Object.keys(portUse()[dev.id] || {}).length, total = allPortKeys(dev).length, cs = ui.conn?.devs[dev.id];
   const placement = z ? `<div class="grid2">
       <label>Side<select data-f="side">${opt('left', 'Left', dev.side)}${opt('right', 'Right', dev.side)}</select></label>
       <label>Faces<select data-f="mount">${opt('rear', 'Rear', dev.mount)}${opt('front', 'Front', dev.mount)}</select></label>
@@ -693,7 +735,8 @@ function devicePropsHTML(rack, dev) {
       ${hasOut(dev) ? `<label>Outlets<input data-f="outlets" type="number" min="0" max="48" value="${nOutlets(dev)}"></label>
       <label>Outlet type<select data-f="outletType">${optsOf(OUTLET_NAME, outletType(dev))}</select></label>
       <label>Capacity (W)<input data-f="capacity" type="number" min="0" step="10" value="${capacity(dev)}"></label>
-      <label>Feed<select data-f="feed" title="Label redundant feeds to check that dual power supplies are split">${opt('', 'Not set', dev.feed || '')}${opt('A', 'Feed A', dev.feed)}${opt('B', 'Feed B', dev.feed)}</select></label>` : ''}
+      <label>Feed<select data-f="feed" title="Label redundant feeds to check that dual power supplies are split">${opt('', 'Not set', dev.feed || '')}${opt('A', 'Feed A', dev.feed)}${opt('B', 'Feed B', dev.feed)}</select></label>
+      <label class="check full" title="Plugged into the building's power: the power chain starts here"><input type="checkbox" data-f="mains"${dev.mains ? ' checked' : ''}> Has building power</label>` : ''}
       ${hasIn(dev) ? `<label>Power inlets<input data-f="inlets" type="number" min="0" max="4" value="${nInlets(dev)}"></label>
       <label>Inlet type<select data-f="inletType">${optsOf(INLET_NAME, inletType(dev))}</select></label>` : ''}
       <label>Draw (W)<input data-f="watts" type="number" min="0" step="5" value="${watts(dev)}"></label>
@@ -705,6 +748,8 @@ function devicePropsHTML(rack, dev) {
     src ? ['Load', `${fmtW(src.normal)}${src.cap ? ' of ' + fmtW(src.cap) : ''} · worst ${fmtW(src.worst)}`] : null,
     watts(dev) ? ['Heat', `${btu(watts(dev))} BTU/h`] : null,
     feeds.length ? ['Fed from', feeds.map(f => `${portShort(f.inlet)} ← ${esc(pm.devs[f.src].dev.name)} ${portShort(f.outlet)}`).join('<br>')] : null,
+    cs && cs.power !== 'na' ? ['Power', `<span class="lamp ${cs.power}"></span>${esc(cs.pWhy)}`] : null,
+    cs && cs.data !== 'na' ? ['Data', `<span class="lamp ${cs.data}"></span>${esc(cs.dWhy)}`] : null,
   ].filter(Boolean);
   const warns = [warn, ...pwarn].filter(Boolean);
   return `<div class="stack">
@@ -723,6 +768,7 @@ function devicePropsHTML(rack, dev) {
       <label>Serial number<input data-f="serial" value="${esc(dev.serial || '')}"></label>
       <label>Weight (kg)<input data-f="weight" type="number" step="any" min="0" value="${weight(dev)}"></label>
       <label class="full">Notes<textarea data-f="notes" rows="2">${esc(dev.notes || '')}</textarea></label>
+      ${total ? `<label class="check full" title="Left out of the connection check, e.g. a spare kept in the rack"><input type="checkbox" data-f="spare"${dev.spare ? ' checked' : ''}> Spare / not in use</label>` : ''}
     </div>
     <dl class="kv">${stats.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
     ${warns.map(w => `<p class="warn">⚠ ${esc(w)}</p>`).join('')}
@@ -879,7 +925,7 @@ function updateDevice(id, f, raw) {
   else if (['depth', 'length', 'offset'].includes(f)) next[f] = Math.max({ offset: 0, length: ZERO_U_MIN, depth: 5 }[f], fromDisp(+raw || 0));
   else if (['watts', 'capacity', 'weight'].includes(f)) next[f] = Math.max(0, +raw || 0);
   else if (['hostname', 'ip', 'serial', 'notes'].includes(f)) next[f] = String(raw).trim();
-  else if (f === 'half' || f === 'feed') { if (raw) next[f] = raw; else delete next[f]; }
+  else if (['half', 'feed', 'mains', 'spare'].includes(f)) { if (raw) next[f] = raw; else delete next[f]; }
   else next[f] = raw;   // mount, side, connector types, color
   const g = isZeroU(next) ? null : portGrid(next);
   const lost = Object.keys(portUse()[id] || {}).filter(k => !validPort(next, k));
@@ -1343,6 +1389,7 @@ document.addEventListener('keydown', e => {
   else if (key === 'm') setMode('measure');
   else if (key === 'r' && ui.view === '2d') setFace(ui.face === 'front' ? 'rear' : 'front');
   else if (key === 'f') $('#fitBtn').click();
+  else if (key === 'k') setCheck(!ui.check);
   else if (e.key === '/') { e.preventDefault(); searchIn.focus(); }
   else if (e.key === '+' || e.key === '=') zoomBy(1.25);
   else if (e.key === '-' || e.key === '_') zoomBy(0.8);
@@ -1369,6 +1416,8 @@ function renderAll() {
   }
   if (ui.pending && !findDev(ui.pending)) ui.pending = null;
   ui.power = powerModel();
+  ui.conn = connectionModel(ui.power);
+  stage.classList.toggle('checking', !!ui.check);
   applyCatColors();
   syncToolbar();
   renderStyleEditor();
@@ -1377,6 +1426,7 @@ function renderAll() {
   renderProps();
   renderCableList();
   renderPowerPanel();
+  renderCheckPanel();
   renderRackForm();
   drawConvRuler();
   renderLegend();

@@ -3,7 +3,7 @@
   --line: #2b2b2e; --line-soft: #c9c9cc; --border: #e4e4e1;
   --hover: #f0f0ee; --seg-bg: #e4e4e1; --seg-on: #ffffff;
   --rack-bg: #fbfbfa; --inner: #efefec; --dev: #ffffff; --far: rgba(0, 0, 0, .025);
-  --accent: #2563eb; --accent-fg: #ffffff; --accent-soft: rgba(37, 99, 235, .12); --bad: #dc2626; --warn: #d97706;
+  --accent: #2563eb; --accent-fg: #ffffff; --accent-soft: rgba(37, 99, 235, .12); --bad: #dc2626; --warn: #d97706; --ok: #16a34a;
   --k-net: #4f7cac; --k-passive: #9a9a9a; --k-compute: #5f8f6b; --k-power: #c08a3e; --k-other: #8a7fb0;
   --grid: #cfcfcb; --grid2: #e6e6e3;
   --shadow: 0 1px 2px rgba(0, 0, 0, .06), 0 4px 14px rgba(0, 0, 0, .08);
@@ -16,7 +16,7 @@
     --line: #cfcfd4; --line-soft: #46464b; --border: #2b2b2f;
     --hover: #26262a; --seg-bg: #232327; --seg-on: #3a3a40;
     --rack-bg: #18181b; --inner: #222226; --dev: #2a2a2e; --far: rgba(255, 255, 255, .03);
-    --accent: #5b8cff; --accent-fg: #0b1220; --accent-soft: rgba(91, 140, 255, .18); --bad: #f05252; --warn: #f59e0b;
+    --accent: #5b8cff; --accent-fg: #0b1220; --accent-soft: rgba(91, 140, 255, .18); --bad: #f05252; --warn: #f59e0b; --ok: #22c55e;
     --grid: #3a3a3f; --grid2: #26262a;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 6px 18px rgba(0, 0, 0, .35);
     color-scheme: dark;
@@ -27,7 +27,7 @@
   --line: #cfcfd4; --line-soft: #46464b; --border: #2b2b2f;
   --hover: #26262a; --seg-bg: #232327; --seg-on: #3a3a40;
   --rack-bg: #18181b; --inner: #222226; --dev: #2a2a2e; --far: rgba(255, 255, 255, .03);
-  --accent: #5b8cff; --accent-fg: #0b1220; --accent-soft: rgba(91, 140, 255, .18); --bad: #f05252; --warn: #f59e0b;
+  --accent: #5b8cff; --accent-fg: #0b1220; --accent-soft: rgba(91, 140, 255, .18); --bad: #f05252; --warn: #f59e0b; --ok: #22c55e;
   --grid: #3a3a3f; --grid2: #26262a;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 6px 18px rgba(0, 0, 0, .35);
   color-scheme: dark;
@@ -423,3 +423,33 @@ fieldset.checks legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
 
 @media (max-width: 1250px) { .search { width: 170px; } }
 @media (max-width: 900px) { .search { order: 10; flex: 1 1 100%; width: auto; } #searchRes { width: 100%; } }
+
+/* ---------- connection check ---------- */
+/* status lights: tiny dots on each device's stripe, with a dark rim so they read on any stripe colour */
+.led { stroke: rgba(0, 0, 0, .45); stroke-width: .6; vector-effect: non-scaling-stroke; }
+.led-ok { fill: var(--ok); }
+.led-partial { fill: var(--warn); }
+.led-none { fill: var(--bad); }
+.led-spare { fill: var(--faint); }
+.dev.far .led { opacity: .7; }
+/* check mode: problems outlined, everything else steps back */
+#stage.checking .dev.chk-ok, #stage.checking .dev.chk-na { opacity: .45; }
+#stage.checking .dev.chk-bad .dev-body { stroke: var(--bad); stroke-width: 2.5; }
+#stage.checking .dev.chk-warn .dev-body { stroke: var(--warn); stroke-width: 2.5; }
+#stage.checking .dev.sel .dev-body { stroke: var(--accent); }
+#stage.checking [data-cable] { opacity: .35; }
+#stage.checking .led { stroke-width: 1; }
+/* the toolbar toggle and its "something needs attention" dot */
+button.ib[aria-pressed="true"], button.ib[aria-pressed="true"]:hover { background: var(--accent-soft); color: var(--accent); }
+#checkBtn { position: relative; }
+#checkBtn .dot { position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--bad); box-shadow: 0 0 0 1.5px var(--panel); }
+#checkBtn .dot.warn { background: var(--warn); }
+/* Connections panel */
+.chk-sum { display: flex; gap: 8px; align-items: center; font-size: 12px; margin-bottom: 8px; }
+.chk-row { display: flex; align-items: flex-start; gap: 8px; padding: 5px 8px; margin: 0 -8px 1px; border-radius: var(--radius); cursor: pointer; font-size: 12px; }
+.chk-row:hover { background: var(--hover); }
+.chk-row .ci-sub { white-space: normal; }
+.lamp { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; margin-top: 4px; background: var(--faint); }
+.lamp.ok { background: var(--ok); } .lamp.partial { background: var(--warn); } .lamp.none { background: var(--bad); }
+.kv .lamp { margin: 0 6px 0 0; vertical-align: 0; }
+.ok-text { color: var(--ok); }

@@ -64,8 +64,10 @@ function sceneSVG(o) {
     const b = devRect(L, r, d), t = T_(d), vx = VR(b.x, b.w);
     const pl = portLayout(L, r, d).filter(p => p.side === face);
     const sel = live && (isSel('device', d.id) || ui.multi.has(d.id));
+    const cs = live && ui.conn?.devs[d.id];
+    const chk = live && ui.check && cs && 'chk-' + (cs.level || (cs.power === 'na' && cs.data === 'na' ? 'na' : 'ok'));
     const cls = ['dev', 'k-' + t.cat, near ? 'near' : 'far', b.vertical && 'zerou', sel && 'sel',
-      live && ui.pending === d.id && 'pending', devWarn(r, d) && 'bad',
+      live && ui.pending === d.id && 'pending', devWarn(r, d) && 'bad', chk,
       live && ui.drag?.moved && ui.drag.ids.includes(d.id) && 'dragging'].filter(Boolean).join(' ');
     const tip = `${d.name} · ${devU(d)}${near ? '' : ` · mounted at the ${d.mount}, you see its back`}`;
     s += `<g class="${cls}" data-dev="${d.id}"${d.color ? ` style="--c:${d.color}"` : ''}>`;
@@ -90,11 +92,26 @@ function sceneSVG(o) {
         + `<title>${esc(portLabel(d, p.key))}${c ? ' · in use' + (live ? ', drag to move the cable' : '') : ''}</title></rect>`;
       if (nums) s += `<text class="pt-num${c ? ' used' : ''}" x="${VR(p.x, p.w) + p.w / 2}" y="${p.y + p.h / 2}">${p.key.slice(1)}</text>`;
     }
+    if (cs) s += ledsSVG(b, vx, cs, k);
     s += '</g>';
   }
 
   if (o.cables !== false) s += cablesSVG(L, port, o, X, VR);
   return s;
+}
+
+/* status lights: small dots on the device's colour stripe, power above data (side by side on a vertical PDU).
+   Kept tiny; check mode makes them a little larger and never smaller than ~2.5 screen pixels. */
+const LED_TEXT = { ok: 'connected', partial: 'partly connected', none: 'not connected', spare: 'spare' };
+function ledsSVG(b, vx, cs, k) {
+  const leds = [['Power', cs.power, cs.pWhy], ['Data', cs.data, cs.dWhy]].filter(l => l[1] !== 'na');
+  if (!leds.length) return '';
+  const r = ui.check ? clamp(2.5 / k, 3, 4.2) : 2.3;
+  return leds.map(([what, st, why], i) => {
+    const off = leds.length > 1 ? (i ? 1 : -1) * Math.max(r + 1.5, 6.5) : 0;
+    const [cx, cy] = b.vertical ? [vx + b.w / 2 + off * 0.8, b.y + 6.5] : [vx + 5.5, b.y + b.h / 2 + off];
+    return `<circle class="led led-${st}" cx="${cx}" cy="${cy}" r="${r}"><title>${what}: ${LED_TEXT[st]} · ${esc(why)}</title></circle>`;
+  }).join('');
 }
 
 function cablesSVG(L, port, o, X, VR) {
@@ -258,6 +275,13 @@ function uFromTop(R, rack, topY, h) {
   return clamp(Math.round((R.railBottom - topY) / U_MM - h) + 1, 1, Math.max(1, rack.units - h + 1));
 }
 
+function checkSummary() {
+  const c = ui.conn;
+  if (!c) return '';
+  const parts = [c.bad && `${c.bad} not connected`, c.warn && `${c.warn} partly connected`,
+    c.cableIssues.length && `${c.cableIssues.length} cable problem${c.cableIssues.length > 1 ? 's' : ''}`].filter(Boolean);
+  return parts.length ? `Check: ${parts.join(' · ')}` : `Check: all ${c.checked} devices connected`;
+}
 function hud() {
   let t = '';
   if (ui.view === '3d') {
@@ -292,10 +316,13 @@ function hud() {
         const d = r.devices.find(d => !isZeroU(d) && n >= d.u && n <= d.u + d.h - 1 && d.mount === ui.face)
           || r.devices.find(d => !isZeroU(d) && n >= d.u && n <= d.u + d.h - 1);
         t = `${r.name} · U${n}${d ? ' · ' + d.name : ' · free'} · ${t}`;
+        const cs = ui.check && d && ui.conn?.devs[d.id];
+        if (cs) t = `${r.name} · U${n} · ${d.name}${cs.power !== 'na' ? ` · Power: ${cs.pWhy}` : ''}${cs.data !== 'na' ? ` · Data: ${cs.dWhy}` : ''}`;
       }
     }
     t = `${ui.face === 'rear' ? 'Rear' : 'Front'} view · ${t}`;
   }
+  if (ui.check && !t) t = checkSummary() + ' · K to leave check mode';
   hudEl.textContent = t;
 }
 

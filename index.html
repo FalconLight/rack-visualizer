@@ -6,7 +6,7 @@
 <title>Rack Visualizer</title>
 <meta name="description" content="Plan the space networking equipment takes up in racks: rack units, ports, power, cables, 2D and 3D views.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232563eb' stroke-width='2' stroke-linecap='round'%3E%3Crect x='5' y='3' width='14' height='18' rx='2'/%3E%3Cpath d='M8 8h8M8 12h8M8 16h8'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css?v=14">
+<link rel="stylesheet" href="style.css?v=21">
 </head>
 <body>
 
@@ -33,6 +33,7 @@
     <symbol id="i-table" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M3.5 14.5h17M9.5 9.5v10"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
     <symbol id="i-wand" viewBox="0 0 24 24"><path d="M4 20L15 9M13 7l2-2 4 4-2 2z"/><path d="M8 3v3M6.5 4.5h3M19 14v3M17.5 15.5h3"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8.5 12.3l2.4 2.4 4.6-4.9"/></symbol>
     <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
   </defs>
@@ -56,6 +57,7 @@
   <label class="ctx" id="cableTypeWrap" title="Preferred cable type. Power ports get a power cable automatically" hidden>
     <select id="cableType" aria-label="Cable type"></select>
   </label>
+  <button class="ib" id="checkBtn" aria-pressed="false" title="Check connections (K): every device's power and data lights, problems outlined" aria-label="Check connections"><svg class="ic"><use href="#i-check"/></svg><i class="dot" id="checkDot" hidden></i></button>
   <div class="seg" id="routeSeg" role="group" aria-label="Cable drawing" title="How cables are drawn in 2D">
     <button data-route="curve">Curved</button><button data-route="ortho">Diagram</button>
   </div>
@@ -156,6 +158,10 @@
       <summary><h3>Power &amp; weight</h3><span class="count warn-count" id="powerCount"></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
       <div class="sec-body"><div id="powerPanel"></div></div>
     </details>
+    <details class="sec" data-key="check">
+      <summary><h3>Connections</h3><span class="count warn-count" id="checkCount"></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
+      <div class="sec-body"><div id="checkPanel"></div></div>
+    </details>
     <details class="sec" data-key="style">
       <summary><h3>Colors &amp; cable types</h3><svg class="ic chev"><use href="#i-chev"/></svg></summary>
       <div class="sec-body"><div id="styleEditor"></div></div>
@@ -185,6 +191,7 @@
     <dt><kbd>V</kbd></dt><dd>Select and move equipment</dd>
     <dt><kbd>C</kbd></dt><dd>Cable tool: click a port, then a port on another device. Power outlets connect to power inlets.</dd>
     <dt><kbd>M</kbd></dt><dd>Measure: drag anywhere</dd>
+    <dt><kbd>K</kbd></dt><dd>Check connections: problems are outlined and listed under Connections. The small lights on each device show power (top) and data (bottom): green connected, amber partly, red not connected</dd>
     <dt><kbd>R</kbd></dt><dd>Switch between the front and rear view (power inlets are at the rear)</dd>
     <dt>Drag a plug</dt><dd>Move a cable end to another port (Select tool)</dd>
     <dt><kbd>Shift</kbd> click / drag</dt><dd>Select several devices, or drag a box on empty space</dd>
@@ -247,11 +254,11 @@
 <datalist id="portCounts"><option value="4"><option value="8"><option value="12"><option value="16"><option value="24"><option value="48"></datalist>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
-<script src="js/model.js?v=14"></script>
-<script src="js/routing.js?v=14"></script>
-<script src="js/draw2d.js?v=14"></script>
-<script src="js/view3d.js?v=14"></script>
-<script src="js/export.js?v=14"></script>
-<script src="js/ui.js?v=14"></script>
+<script src="js/model.js?v=21"></script>
+<script src="js/routing.js?v=21"></script>
+<script src="js/draw2d.js?v=21"></script>
+<script src="js/view3d.js?v=21"></script>
+<script src="js/export.js?v=21"></script>
+<script src="js/ui.js?v=21"></script>
 </body>
 </html>

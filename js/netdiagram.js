@@ -135,12 +135,29 @@ function layeredArrange(G, comps, horizontal) {
       }
     }
     const min = Math.min(...list.map(n => n.a)), max = Math.max(...list.map(n => n.a));
-    for (const n of list) {
-      const a = n.a - min + off, b = n.layer * across;
-      pos.set(n.id, horizontal ? { x: b, y: a } : { x: a, y: b });
-    }
+    for (const n of list) n.a = n.a - min + off;
     off += max - min + (horizontal ? NODE_H : NODE_W) + COMP_GAP;
   }
+  /* each gap between layers as wide as its lanes need: as many as the links that overlap there at most
+     (plus the ones going round the layer above), like the lanes of the 2D diagram */
+  const nodes = comps.flat(), layers = Math.max(0, ...nodes.map(n => n.layer)) + 1, size = horizontal ? NODE_H : NODE_W;
+  const spans = Array.from({ length: layers }, () => []);
+  for (const l of G.links.values()) {
+    const A = G.nodes.get(l.a), B = G.nodes.get(l.b);
+    if (A.layer == null || B.layer == null) continue;
+    const s = [Math.min(A.a, B.a) + size / 2, Math.max(A.a, B.a) + size / 2];
+    if (A.layer !== B.layer) spans[Math.min(A.layer, B.layer)].push(s);
+    else if (Math.abs(A.ord - B.ord) > 1) spans[A.layer].push(s);   // goes round the boxes between them
+  }
+  const most = list => {   // the most spans overlapping at any point
+    const ev = list.flatMap(([a, b]) => [[a, 1], [b, -1]]).sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+    let n = 0, top = 0;
+    for (const [, d] of ev) top = Math.max(top, (n += d));
+    return top;
+  };
+  const base = horizontal ? 120 : ROW_GAP, at = [0];
+  for (let k = 0; k + 1 < layers; k++) at[k + 1] = at[k] + (horizontal ? NODE_W : NODE_H) + Math.max(base, most(spans[k]) * TRACK + 28);
+  for (const n of nodes) pos.set(n.id, horizontal ? { x: at[n.layer], y: n.a } : { x: n.a, y: at[n.layer] });
   return pos;
 }
 /* star: the most connected device in the middle, the others in rings by how many steps away,
@@ -251,16 +268,31 @@ function netLinkGeometry(G) {
     const vertical = flow === 'h' ? gapX <= 20 : gapY > 20 || gapX <= 10;
     let sa = vertical ? (dy >= 0 ? 'b' : 't') : (dx >= 0 ? 'r' : 'l'), sb = { t: 'b', b: 't', l: 'r', r: 'l' }[sa], around = null;
     const [L, R] = dx >= 0 ? [A, B] : [B, A], [T, D] = dy >= 0 ? [A, B] : [B, A];
-    if (!vertical && hit(L.x + NODE_W, R.x, Math.min(A.y, B.y) + NODE_H * 0.25, Math.max(A.y, B.y) + NODE_H * 0.75, A, B)) around = 'under';
-    if (vertical && hit(Math.min(A.x, B.x) + NODE_W * 0.3, Math.max(A.x, B.x) + NODE_W * 0.7, T.y + NODE_H, D.y, A, B)) around = 'beside';
-    if (around === 'under') sa = sb = 'b';   // a box in the way: go under the row, or beside the column, instead of through it
-    if (around === 'beside') sa = sb = 'r';
-    const g = { l, A, B, sa, sb, vertical, around };
-    geo.set(l.id, g);
-    for (const [N, s, O] of [[A, sa, B], [B, sb, A]]) {
-      const k = N.id + s;
-      (ends.get(k) || ends.set(k, []).get(k)).push({ g, end: N === A ? 'a' : 'b', o: s === 't' || s === 'b' ? O.x : O.y });
+    // a box in the way: go round the row (under or over it) or the column (right or left of it) instead of through it
+    if (!vertical && hit(L.x + NODE_W, R.x, Math.min(A.y, B.y) + NODE_H * 0.25, Math.max(A.y, B.y) + NODE_H * 0.75, A, B)) around = 'row';
+    if (vertical && hit(Math.min(A.x, B.x) + NODE_W * 0.3, Math.max(A.x, B.x) + NODE_W * 0.7, T.y + NODE_H, D.y, A, B)) around = 'col';
+    geo.set(l.id, { l, A, B, sa, sb, vertical, around });
+  }
+  /* which way round: each detour takes the side where it crosses the fewest detours already there
+     (two cross when their stretches overlap without one holding the other), longest first */
+  const sides = { row: [], col: [] };
+  for (const g of geo.values()) if (g.around) {
+    const c = g.around === 'row' ? [g.A.x, g.B.x] : [g.A.y, g.B.y];
+    sides[g.around].push({ g, s0: Math.min(...c), s1: Math.max(...c) });
+  }
+  const interleave = (p, q) => (p.s0 < q.s0 && q.s0 < p.s1 && p.s1 < q.s1) || (q.s0 < p.s0 && p.s0 < q.s1 && q.s1 < p.s1);
+  for (const [kind, list] of Object.entries(sides)) {
+    const [one, two] = kind === 'row' ? ['under', 'over'] : ['right', 'left'], on = { [one]: [], [two]: [] };
+    for (const d of list.sort((p, q) => (q.s1 - q.s0) - (p.s1 - p.s0))) {
+      const pick = on[two].filter(o => interleave(o, d)).length < on[one].filter(o => interleave(o, d)).length ? two : one;
+      on[pick].push(d);
+      d.g.around = pick;
+      d.g.sa = d.g.sb = { under: 'b', over: 't', right: 'r', left: 'l' }[pick];
     }
+  }
+  for (const g of geo.values()) for (const [N, s, O] of [[g.A, g.sa, g.B], [g.B, g.sb, g.A]]) {
+    const k = N.id + s;
+    (ends.get(k) || ends.set(k, []).get(k)).push({ g, end: N === g.A ? 'a' : 'b', o: s === 't' || s === 'b' ? O.x : O.y });
   }
   for (const [k, list] of ends) {
     const side = k.slice(-1), len = side === 't' || side === 'b' ? NODE_W * 0.7 : NODE_H * 0.6;
@@ -272,23 +304,22 @@ function netLinkGeometry(G) {
     : s === 'l' ? [N.x, N.y + NODE_H / 2 + off] : [N.x + NODE_W, N.y + NODE_H / 2 + off];
   const angled = netSet().links === 'angled';
   for (const g of geo.values()) {
-    const [x1, y1] = anchor(g.A, g.sa, g.offa || 0), [x2, y2] = anchor(g.B, g.sb, g.offb || 0);
-    const [n1, n2] = [SIDE_N[g.sa], SIDE_N[g.sb]];
-    if (g.around === 'under') {   // down from both, across below the lower of the two
-      const yU = Math.max(y1, y2) + 26 + Math.abs((g.offa || 0) + (g.offb || 0)) / 2;
-      g.d = angled ? roundedPath([{ x: x1, y: y1 }, { x: x1, y: yU }, { x: x2, y: yU }, { x: x2, y: y2 }], 6)
-        : `M${x1},${y1} C${x1},${yU + 12} ${x2},${yU + 12} ${x2},${y2}`;
-      g.mid = { x: (x1 + x2) / 2, y: angled ? yU : yU + 2 };
-    } else if (g.around === 'beside') {   // out to the right of both, along beside them
-      const xR = Math.max(x1, x2) + 26 + Math.abs((g.offa || 0) + (g.offb || 0)) / 2;
-      g.d = angled ? roundedPath([{ x: x1, y: y1 }, { x: xR, y: y1 }, { x: xR, y: y2 }, { x: x2, y: y2 }], 6)
-        : `M${x1},${y1} C${xR + 12},${y1} ${xR + 12},${y2} ${x2},${y2}`;
-      g.mid = { x: angled ? xR : xR + 2, y: (y1 + y2) / 2 };
-    } else if (angled) {
-      const pts = g.vertical
-        ? (() => { const m = (y1 + y2) / 2; return [{ x: x1, y: y1 }, { x: x1, y: m }, { x: x2, y: m }, { x: x2, y: y2 }]; })()
-        : (() => { const m = (x1 + x2) / 2; return [{ x: x1, y: y1 }, { x: m, y: y1 }, { x: m, y: y2 }, { x: x2, y: y2 }]; })();
-      g.d = roundedPath(pts, 6);
+    [g.x1, g.y1] = anchor(g.A, g.sa, g.offa || 0);
+    [g.x2, g.y2] = anchor(g.B, g.sb, g.offb || 0);
+    g.ends = [[g.A, g.sa, g.x1, g.y1], [g.B, g.sb, g.x2, g.y2]];
+  }
+  netTracks(G, geo, angled);
+  for (const g of geo.values()) {
+    const { x1, y1, x2, y2, t } = g, [n1, n2] = [SIDE_N[g.sa], SIDE_N[g.sb]];
+    // the run in the middle: across at height t (links joining top and bottom, or going round a row),
+    // or along at x t (links joining the sides, or going round a column)
+    const across = g.around === 'under' || g.around === 'over' || (!g.around && g.vertical);
+    if (angled || g.around) {
+      const pts = across ? [{ x: x1, y: y1 }, { x: x1, y: t }, { x: x2, y: t }, { x: x2, y: y2 }]
+        : [{ x: x1, y: y1 }, { x: t, y: y1 }, { x: t, y: y2 }, { x: x2, y: y2 }];
+      const bulge = t + (g.around === 'over' || g.around === 'left' ? -12 : 12);
+      if (angled) g.d = roundedPath(pts, 6);
+      else g.d = across ? `M${x1},${y1} C${x1},${bulge} ${x2},${bulge} ${x2},${y2}` : `M${x1},${y1} C${bulge},${y1} ${bulge},${y2} ${x2},${y2}`;
       g.mid = { x: (pts[1].x + pts[2].x) / 2, y: (pts[1].y + pts[2].y) / 2 };
     } else {
       const c = Math.max(30, (g.vertical ? Math.abs(y2 - y1) : Math.abs(x2 - x1)) / 2);
@@ -296,9 +327,107 @@ function netLinkGeometry(G) {
       g.d = `M${x1},${y1} C${c1[0]},${c1[1]} ${c2[0]},${c2[1]} ${x2},${y2}`;
       g.mid = { x: (x1 + 3 * c1[0] + 3 * c2[0] + x2) / 8, y: (y1 + 3 * c1[1] + 3 * c2[1] + y2) / 8 };
     }
-    g.ends = [[g.A, g.sa, x1, y1], [g.B, g.sb, x2, y2]];
   }
   return geo;
+}
+
+/* Lanes for the middle runs, like the lanes of the 2D diagram: runs that share a gap and overlap get
+   their own lane, TRACK apart and centred in the gap, in the order that crosses least. Detours under a
+   row or beside a column stack outward, the shortest nearest the boxes. */
+const TRACK = 12;
+function netTracks(G, geo, angled) {
+  const zs = { h: [], v: [] }, detours = { under: [], over: [], right: [], left: [] };
+  for (const g of geo.values()) {
+    if (g.around) {   // detours stack outward from the boxes they go round
+      const across = g.around === 'under' || g.around === 'over', out = g.around === 'under' || g.around === 'right' ? 1 : -1;
+      const along = across ? [g.x1, g.x2] : [g.y1, g.y2], from = across ? [g.y1, g.y2] : [g.x1, g.x2];
+      detours[g.around].push({ g, out, s0: Math.min(...along), s1: Math.max(...along), base: (out > 0 ? Math.max(...from) : Math.min(...from)) + out * 20 });
+      continue;
+    }
+    // a straight-through run: which end is on the near side of the gap (upper / left), and the gap itself
+    const flip = g.vertical ? g.y1 > g.y2 : g.x1 > g.x2;
+    const [n, f] = flip ? [[g.x2, g.y2], [g.x1, g.y1]] : [[g.x1, g.y1], [g.x2, g.y2]];
+    const s = g.vertical ? { a1: n[0], a2: f[0], lo: n[1] + 14, hi: f[1] - 14 } : { a1: n[1], a2: f[1], lo: n[0] + 14, hi: f[0] - 14 };
+    s.g = g;
+    g.t = (s.lo + s.hi) / 2;   // alone: the middle of the gap
+    if (angled) zs[g.vertical ? 'h' : 'v'].push(s);
+  }
+  for (const list of Object.values(zs)) for (const group of netOverlapGroups(list, (p, q) => p.lo < q.hi && q.lo < p.hi)) {
+    if (group.length < 2) continue;
+    const lo = Math.max(...group.map(s => s.lo)), hi = Math.min(...group.map(s => s.hi));
+    if (hi - lo < 8) continue;   // no room the runs share: each stays in the middle of its own gap
+    const sp = Math.min(TRACK, (hi - lo) / group.length), mid = (lo + hi) / 2;
+    netTrackOrder(group).forEach((s, i, all) => (s.g.t = mid + (i - (all.length - 1) / 2) * sp));
+  }
+  for (const list of Object.values(detours)) {
+    for (const d of list) { d.a1 = d.s0; d.a2 = d.s1; }
+    for (const group of netOverlapGroups(list, (p, q) => Math.abs(p.base - q.base) < 60)) {
+      const out = group[0].out, base = out > 0 ? Math.max(...group.map(d => d.base)) : Math.min(...group.map(d => d.base));
+      group.sort((p, q) => (p.s1 - p.s0) - (q.s1 - q.s0)).forEach((d, i) => (d.g.t = base + out * (6 + i * TRACK)));
+    }
+  }
+  /* last, across groups: lanes of different groups can share a gap (a detour over a row sits in the gap
+     the links from the row above use). A run lying on another moves to the nearest free lane, inside its
+     own gap; detours only further out. */
+  if (!angled) return;
+  const runs = [];
+  for (const s of [...zs.h, ...zs.v]) runs.push({ g: s.g, o: zs.h.includes(s) ? 'h' : 'v', s0: Math.min(s.a1, s.a2), s1: Math.max(s.a1, s.a2), lo: s.lo, hi: s.hi });
+  for (const [kind, list] of Object.entries(detours)) for (const d of list)
+    runs.push({ g: d.g, o: kind === 'under' || kind === 'over' ? 'h' : 'v', s0: d.s0, s1: d.s1, lo: d.out > 0 ? d.g.t : -Infinity, hi: d.out > 0 ? Infinity : d.g.t, out: d.out });
+  const placed = [], boxes = [...G.nodes.values()];
+  const clash = (r, t) => placed.some(p => p.o === r.o && Math.abs(p.g.t - t) < TRACK - 1 && Math.min(p.s1, r.s1) - Math.max(p.s0, r.s0) > 6);
+  /* would the link, with its run at t, pass through a box other than its own two? (run and both legs) */
+  const segIn = (x0, y0, x1, y1, o) => o.x + 2 < Math.max(x0, x1) && Math.min(x0, x1) < o.x + NODE_W - 2 && o.y + 2 < Math.max(y0, y1) && Math.min(y0, y1) < o.y + NODE_H - 2;
+  const blocked = (r, t) => {
+    const { g } = r, pts = r.o === 'h' ? [[g.x1, g.y1], [g.x1, t], [g.x2, t], [g.x2, g.y2]] : [[g.x1, g.y1], [t, g.y1], [t, g.y2], [g.x2, g.y2]];
+    return boxes.some(o => o !== g.A && o !== g.B && [0, 1, 2].some(i => segIn(...pts[i], ...pts[i + 1], o)));
+  };
+  for (const r of runs) {
+    if (clash(r, r.g.t)) {
+      for (let k = 1; k < 40; k++) {
+        const t = r.out ? r.g.t + r.out * k * TRACK : r.g.t + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * TRACK;
+        if (t < r.lo - 0.5 || t > r.hi + 0.5) { if (r.out) break; continue; }
+        if (!clash(r, t) && !blocked(r, t)) { r.g.t = t; break; }   // otherwise it stays: touching beats cutting through a box
+      }
+    }
+    placed.push(r);
+  }
+}
+/* runs that overlap along their length (and pass `near`) end up in one group */
+function netOverlapGroups(list, near) {
+  const up = list.map((_, i) => i), find = i => (up[i] === i ? i : (up[i] = find(up[i])));
+  const span = s => [Math.min(s.a1, s.a2), Math.max(s.a1, s.a2)];
+  for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+    const [a0, a1] = span(list[i]), [b0, b1] = span(list[j]);
+    if (a0 < b1 + 2 && b0 < a1 + 2 && near(list[i], list[j])) up[find(i)] = find(j);
+  }
+  const groups = new Map();
+  list.forEach((s, i) => (groups.get(find(i)) || groups.set(find(i), []).get(find(i))).push(s));
+  return [...groups.values()];
+}
+/* lane order with the fewest crossings. With p's run nearer the near side than q's, they cross where
+   q's near leg passes through p's run and where p's far leg passes through q's run. Each pair prefers
+   its cheaper order; the order follows those preferences (any loop broken where it costs least). */
+function netTrackOrder(group) {
+  const inside = (x, s) => x > Math.min(s.a1, s.a2) + 0.5 && x < Math.max(s.a1, s.a2) - 0.5;
+  const cost = (p, q) => inside(q.a1, p) + inside(p.a2, q);
+  const n = group.length, after = group.map(() => new Set());   // after[j]: what has to come before j
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+    const c1 = cost(group[i], group[j]), c2 = cost(group[j], group[i]);
+    if (c1 < c2) after[j].add(i); else if (c2 < c1) after[i].add(j);
+  }
+  const left = new Set(group.keys()), out = [];
+  const key = i => Math.min(group[i].a1, group[i].a2);
+  while (left.size) {
+    let pick = null, best = Infinity;
+    for (const i of left) {
+      const waits = [...after[i]].filter(j => left.has(j)).length;
+      if (waits < best || (waits === best && key(i) < key(pick))) { best = waits; pick = i; }
+    }
+    out.push(group[pick]);
+    left.delete(pick);
+  }
+  return out;
 }
 
 /* ---------- drawing ---------- */

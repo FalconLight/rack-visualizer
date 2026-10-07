@@ -25,7 +25,7 @@ const TOUR = [
   { at: () => [$('#splitBtn'), $('#netPane')], side: 'bottom', title: 'Network diagram, side by side',
     enter: () => { tour.pane = ui.pane; if (ui.pane !== 'split') setPane('split'); },
     leave: () => { if (tour?.pane && tour.pane !== ui.pane) setPane(tour.pane); },
-    text: 'Every connection as a diagram, with <b>Data</b> for the network and <b>Power</b> for the chain from the building feed down. This button (<kbd>N</kbd>) shows it next to the racks: select a device in one and it is selected and shown in the other. Drag the divider to resize.' },
+    text: 'Every connection as a diagram, with <b>Data</b> for the network and <b>Power</b> for the chain from the building feed down. This button (<kbd>N</kbd>) shows it next to the racks: select a device in one and it is selected and shown in the other. Drag boxes to move them, or use <b>Arrange</b> for a standard layout; the grid, snapping and round or angled links are in the bar above the diagram.' },
   { at: () => $('#modeSeg'), side: 'bottom', title: 'Tools',
     text: '<b>Select</b> (<kbd>V</kbd>) moves and edits. <b>Cable</b> (<kbd>C</kbd>): click a port, then a port on another device, and the right cable type is picked for you. <b>Measure</b> (<kbd>M</kbd>): drag to measure in centimetres, inches and rack units.' },
   { at: () => [$('#routeSeg'), $('#tidyBtn')], side: 'bottom', enter: show2D, title: 'How cables are drawn',

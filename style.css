@@ -494,7 +494,7 @@ button.ib[aria-pressed="true"], button.ib[aria-pressed="true"]:hover { backgroun
 #netPane { position: relative; flex: 1 1 0; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg); }
 #netSvg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; user-select: none; cursor: grab; }
 #netSvg.panning { cursor: grabbing; }
-.net-bar { left: 12px; top: 12px; display: flex; align-items: center; gap: 10px; padding: 4px 4px 4px 12px; }
+.net-bar { left: 12px; top: 12px; right: 12px; width: max-content; max-width: calc(100% - 24px); display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 4px 4px 4px 12px; }
 .net-title { font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
 #netLegend { left: 12px; bottom: 12px; padding: 7px 10px; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; max-width: calc(100% - 150px); }
 #netLegend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -561,3 +561,18 @@ button.ib[aria-pressed="true"], button.ib[aria-pressed="true"]:hover { backgroun
   .panel-bar[aria-expanded="false"] .ic { transform: rotate(-90deg); }
   main.no-left aside.left > :not(.panel-bar), main.no-right aside.right > :not(.panel-bar) { display: none; }
 }
+
+/* diagram tools: arrange menu, grid, snap, link style; moving boxes */
+.net-bar .divider { height: 18px; }
+.net-bar .seg button { padding: 0 8px; }
+.net-arrange { height: calc(var(--ctl-h) - 4px); padding: 0 10px; gap: 6px; font-size: 12.5px; }
+#netArrangeMenu { left: 0; right: auto; min-width: 270px; z-index: 6; }
+#netArrangeMenu button { height: auto; min-height: 40px; padding: 5px 9px; text-align: left; }
+#netArrangeMenu button.on .ci-main::after { content: " ✓"; color: var(--accent); }
+.net-bar button.ib[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.net-grid { fill: none; stroke: var(--line-soft); stroke-width: .6; vector-effect: non-scaling-stroke; opacity: .55; }
+.net-grid.major { stroke-width: 1; opacity: .9; }
+.net-grid-bg { pointer-events: none; }
+.nn { cursor: grab; }
+#netSvg.moving, #netSvg.moving .nn { cursor: grabbing; }
+.nn.loose .nn-box { stroke-dasharray: 4 3; }

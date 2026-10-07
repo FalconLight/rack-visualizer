@@ -307,6 +307,22 @@ function sanitize(d) {
     for (const [k, v] of Object.entries(src)) if (Array.isArray(v)) ro[face][k] = v.filter(id => typeof id === 'string');
   }
   if (d.routeOrder) d.routeOrder = ro;
+  /* network diagram: look (grid, snap, link style) and the positions of moved boxes, per layer */
+  const net = s.net && typeof s.net === 'object' ? s.net : {};
+  s.net = { grid: !!net.grid, snap: net.snap !== false, links: pick(net.links, ['curved', 'angled']) || 'curved' };
+  const np = {};
+  for (const layer of ['data', 'power']) {
+    const src = d.netPos?.[layer];
+    if (!src || typeof src !== 'object') continue;
+    np[layer] = {};
+    if (src['#flow'] === 'h') np[layer]['#flow'] = 'h';   // read left to right
+    for (const [id, v] of Object.entries(src)) {
+      const key = devMap.get(id) || id;
+      if ((key === '#mains' || ID_RE.test(key)) && Array.isArray(v) && v.length === 2 && v.every(Number.isFinite))
+        np[layer][key] = v.map(n => clamp(Math.round(n), -1e6, 1e6));
+    }
+  }
+  if (Object.keys(np).length) d.netPos = np; else delete d.netPos;
   return d;
 }
 const pickTypeId = (types, kind) => (types.find(t => t.kind === kind) || types[0]).id;
@@ -348,7 +364,7 @@ function mutate(fn) {
   renderAll();
 }
 /* display preferences aren't edits: undo and redo leave them as they are */
-const VIEW_PREFS = ['unit', 'route'];
+const VIEW_PREFS = ['unit', 'route', 'net'];
 function restore(e) {
   const keep = Object.fromEntries(VIEW_PREFS.map(k => [k, doc.settings[k]]));
   doc = JSON.parse(e.doc);

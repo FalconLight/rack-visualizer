@@ -6,7 +6,7 @@
 <title>Rack Visualizer</title>
 <meta name="description" content="Plan the space networking equipment takes up in racks: rack units, ports, power, cables, 2D and 3D views.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232563eb' stroke-width='2' stroke-linecap='round'%3E%3Crect x='5' y='3' width='14' height='18' rx='2'/%3E%3Cpath d='M8 8h8M8 12h8M8 16h8'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css?v=28">
+<link rel="stylesheet" href="style.css?v=33">
 </head>
 <body>
 
@@ -35,6 +35,11 @@
     <symbol id="i-wand" viewBox="0 0 24 24"><path d="M4 20L15 9M13 7l2-2 4 4-2 2z"/><path d="M8 3v3M6.5 4.5h3M19 14v3M17.5 15.5h3"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8.5 12.3l2.4 2.4 4.6-4.9"/></symbol>
     <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1.5"/><path d="M4 9.3h16M4 14.7h16M9.3 4v16M14.7 4v16"/></symbol>
+    <symbol id="i-magnet" viewBox="0 0 24 24"><path d="M6 4v7.5a6 6 0 0 0 12 0V4h-4v7.5a2 2 0 0 1-4 0V4z"/><path d="M6 8h4M14 8h4"/></symbol>
+    <symbol id="i-curve" viewBox="0 0 24 24"><path d="M5 19C5 11 19 13 19 5"/><circle cx="5" cy="19" r="1.5"/><circle cx="19" cy="5" r="1.5"/></symbol>
+    <symbol id="i-angle" viewBox="0 0 24 24"><path d="M5 19v-7h14V5"/><circle cx="5" cy="19" r="1.5"/><circle cx="19" cy="5" r="1.5"/></symbol>
+    <symbol id="i-arrange" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="4.5" rx="1"/><rect x="3" y="16.5" width="6" height="4.5" rx="1"/><rect x="15" y="16.5" width="6" height="4.5" rx="1"/><path d="M12 7.5V12M6 16.5V12h12v4.5"/></symbol>
     <symbol id="i-split" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M12 4.5v15"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
   </defs>
@@ -157,6 +162,16 @@
       <div class="seg" id="netLayerSeg" role="group" aria-label="Diagram">
         <button data-layer="data" class="on" title="Data cables between devices">Data</button><button data-layer="power" title="The power chain, from the building feed down">Power</button>
       </div>
+      <span class="divider"></span>
+      <div class="menu-wrap" id="netArrangeWrap">
+        <button class="net-arrange" id="netArrangeBtn" aria-haspopup="menu" aria-expanded="false" title="Arrange the boxes in a standard layout"><svg class="ic"><use href="#i-arrange"/></svg><span>Arrange</span></button>
+        <div class="menu" id="netArrangeMenu" role="menu" hidden></div>
+      </div>
+      <button class="ib" id="netGridBtn" aria-pressed="false" title="Show the grid" aria-label="Grid"><svg class="ic"><use href="#i-grid"/></svg></button>
+      <button class="ib" id="netSnapBtn" aria-pressed="false" title="Snap boxes to the grid" aria-label="Snap to the grid"><svg class="ic"><use href="#i-magnet"/></svg></button>
+      <div class="seg" id="netLinkSeg" role="group" aria-label="Links">
+        <button data-links="curved" title="Round links" aria-label="Round links"><svg class="ic"><use href="#i-curve"/></svg></button><button data-links="angled" title="Angled links" aria-label="Angled links"><svg class="ic"><use href="#i-angle"/></svg></button>
+      </div>
     </div>
     <div id="netLegend" class="float" hidden></div>
     <div class="zoom float" id="netZoom">
@@ -220,6 +235,7 @@
     <dt><kbd>K</kbd></dt><dd>Check connections: problems are outlined and listed under Connections. The small lights on each device show power (top) and data (bottom): green connected, amber partly, red not connected</dd>
     <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Hide or show the left and right panels (or the tabs on their edges)</dd>
     <dt>Double-click · <kbd>Enter</kbd></dt><dd>Open the properties of a device, rack or cable, in any view</dd>
+    <dt>Network diagram</dt><dd>Drag a box to move it (Shift-click several to move them together); Arrange picks a standard layout. Grid, snap and round or angled links are in its bar</dd>
     <dt><kbd>N</kbd></dt><dd>Racks and the network diagram side by side; selecting in one selects in the other</dd>
     <dt><kbd>R</kbd></dt><dd>Switch between the front and rear view (power inlets are at the rear)</dd>
     <dt>Drag a plug</dt><dd>Move a cable end to another port (Select tool)</dd>
@@ -284,13 +300,13 @@
 <datalist id="portCounts"><option value="4"><option value="8"><option value="12"><option value="16"><option value="24"><option value="48"></datalist>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
-<script src="js/model.js?v=28"></script>
-<script src="js/routing.js?v=28"></script>
-<script src="js/draw2d.js?v=28"></script>
-<script src="js/view3d.js?v=28"></script>
-<script src="js/export.js?v=28"></script>
-<script src="js/netdiagram.js?v=28"></script>
-<script src="js/ui.js?v=28"></script>
-<script src="js/tour.js?v=28"></script>
+<script src="js/model.js?v=33"></script>
+<script src="js/routing.js?v=33"></script>
+<script src="js/draw2d.js?v=33"></script>
+<script src="js/view3d.js?v=33"></script>
+<script src="js/export.js?v=33"></script>
+<script src="js/netdiagram.js?v=33"></script>
+<script src="js/ui.js?v=33"></script>
+<script src="js/tour.js?v=33"></script>
 </body>
 </html>

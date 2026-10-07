@@ -4,15 +4,21 @@
    The connections drawn as a diagram: every device with ports is a box,
    the cables between two devices one link (with a count when there are
    several). "Data" shows the network, "Power" the power chain from the
-   building feed down. Laid out top-down in layers, the way network
-   diagrams usually are. Shown on its own or next to the racks; both
-   views share the selection.
+   building feed down. Shown on its own or next to the racks; both views
+   share the selection.
+   Until a box is moved the diagram arranges itself (top-down tree) and
+   follows every change. Moving a box, or picking a layout from "Arrange",
+   keeps the positions (per layer, saved with the layout); devices added
+   later are placed next to what they connect to.
    ===================================================================== */
 
 const netPane = $('#netPane'), netSvg = $('#netSvg');
-const NODE_W = 176, NODE_H = 56, ROW_GAP = 86, COL_GAP = 28, COMP_GAP = 96, LOOSE_GAP = 70;
+const NODE_W = 180, NODE_H = 60, GRID = 20;   // boxes are whole grid cells, so both edges sit on grid lines
+const ROW_GAP = 80, COL_GAP = 20, COMP_GAP = 100, LOOSE_GAP = 80;
 ui.net = { layer: 'data', cam: { x: 0, y: 0, k: 1 }, fitK: 1, userMoved: false, bounds: null, lastSel: null };
 try { ui.net.layer = localStorage.getItem('rackviz.netLayer') === 'power' ? 'power' : 'data'; } catch (e) { /* ignore */ }
+const netSet = () => doc.settings.net;
+const snapTo = v => Math.round(v / GRID) * GRID;
 
 /* where a device sits, top to bottom, in a data network: incoming lines first, endpoints and copper panels last */
 function netTier(d) {
@@ -50,51 +56,66 @@ function netGraph(layer) {
   }
   return { nodes, links, layer };
 }
-
-/* ---------- layout ----------
-   per connected group: layers (data: steps from the incoming lines; power: longest chain from the feed),
-   order within a layer by the barycentre of the neighbours (fewer crossings), then x near the
-   neighbours. Groups side by side, devices with nothing connected in a grid below. */
-function netLayout(G) {
-  const nodes = [...G.nodes.values()], power = G.layer === 'power';
-  const other = (n, l) => G.nodes.get(l.a === n.id ? l.b : l.a);
+const netOther = (G, n, l) => G.nodes.get(l.a === n.id ? l.b : l.a);
+/* rack order, then top to bottom: keeps the diagram close to how the racks read */
+function physOrder(n) {
+  if (n.mains) return -1;
+  return doc.racks.indexOf(n.rack) * 1000 + (n.rack.units - (isZeroU(n.dev) ? 0 : n.dev.u));
+}
+function netComponents(G) {
   const comps = [], seen = new Set();
-  for (const n of nodes) {
+  for (const n of [...G.nodes.values()].sort((p, q) => physOrder(p) - physOrder(q))) {
     if (seen.has(n.id) || !n.links.length) continue;
     const list = [], stack = [n];
     seen.add(n.id);
     while (stack.length) {
       const m = stack.pop(); list.push(m);
-      for (const l of m.links) { const o = other(m, l); if (!seen.has(o.id)) { seen.add(o.id); stack.push(o); } }
+      for (const l of m.links) { const o = netOther(G, m, l); if (!seen.has(o.id)) { seen.add(o.id); stack.push(o); } }
     }
     comps.push(list);
   }
   comps.sort((p, q) => q.length - p.length);
-  const loose = nodes.filter(n => !n.links.length).sort((p, q) => physOrder(p) - physOrder(q));
+  return { comps, loose: [...G.nodes.values()].filter(n => !n.links.length).sort((p, q) => physOrder(p) - physOrder(q)) };
+}
 
-  let x0 = 0, maxY = 0;
+/* ---------- arrangements ----------
+   Each returns a position (top-left of the box) for every node; all of them snap to the grid. */
+const ARRANGE = {
+  tree: { label: 'Top-down tree', hint: 'Incoming lines at the top, endpoints at the bottom' },
+  lr: { label: 'Left to right', hint: 'The same order, flowing left to right' },
+  star: { label: 'Star', hint: 'Around the most connected device' },
+  racks: { label: 'By rack', hint: 'One column per rack, top to bottom' },
+};
+/* layers: data counts steps from the incoming lines; power takes the longest chain from the feed */
+function netLayers(G, list) {
+  if (G.layer === 'power') {
+    for (const n of list) n.layer = n.mains || !n.links.some(l => l.b === n.id) ? 0 : -1;
+    for (let i = 0; i < list.length; i++) for (const n of list) for (const l of n.links)
+      if (l.a === n.id && n.layer >= 0) { const o = G.nodes.get(l.b); o.layer = Math.min(list.length, Math.max(o.layer, n.layer + 1)); }
+    for (const n of list) if (n.layer < 0) n.layer = 0;   // a loop with no way in
+    return;
+  }
+  const top = Math.min(...list.map(n => netTier(n.dev)));
+  const queue = list.filter(n => netTier(n.dev) === top);
+  for (const n of list) n.layer = -1;
+  for (const n of queue) n.layer = 0;
+  for (let i = 0; i < queue.length; i++)
+    for (const l of queue[i].links) { const o = netOther(G, queue[i], l); if (o.layer < 0) { o.layer = queue[i].layer + 1; queue.push(o); } }
+}
+/* tree / left to right: layers, ordered by the barycentre of the neighbours (fewer crossings), each box
+   near its neighbours along the layer */
+function layeredArrange(G, comps, horizontal) {
+  const along = horizontal ? NODE_H + 40 : NODE_W + COL_GAP, across = horizontal ? NODE_W + 120 : NODE_H + ROW_GAP;
+  const pos = new Map();
+  let off = 0;
   for (const list of comps) {
-    /* layers */
-    if (power) {
-      for (const n of list) n.layer = n.mains || !n.links.some(l => l.b === n.id) ? 0 : -1;
-      for (let i = 0; i < list.length; i++) for (const n of list) for (const l of n.links)
-        if (l.a === n.id && n.layer >= 0) { const o = G.nodes.get(l.b); o.layer = Math.min(list.length, Math.max(o.layer, n.layer + 1)); }
-      for (const n of list) if (n.layer < 0) n.layer = 0;   // a loop with no way in
-    } else {
-      const top = Math.min(...list.map(n => netTier(n.dev)));
-      const queue = list.filter(n => netTier(n.dev) === top).sort((p, q) => physOrder(p) - physOrder(q));
-      for (const n of list) n.layer = -1;
-      for (const n of queue) n.layer = 0;
-      for (let i = 0; i < queue.length; i++)
-        for (const l of queue[i].links) { const o = other(queue[i], l); if (o.layer < 0) { o.layer = queue[i].layer + 1; queue.push(o); } }
-    }
-    /* order within layers */
+    netLayers(G, list);
     const rows = [];
-    for (const n of list.sort((p, q) => physOrder(p) - physOrder(q))) (rows[n.layer] ||= []).push(n);
+    for (const n of list) (rows[n.layer] ||= []).push(n);
     for (let i = 0; i < rows.length; i++) rows[i] ||= [];
-    const idx = () => rows.forEach(r => r.forEach((n, i) => (n.ord = i)));
-    idx();
-    const bary = (n, d) => { const v = n.links.map(l => other(n, l)).filter(o => o.layer === n.layer + d).map(o => o.ord); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : n.ord; };
+    rows.forEach(r => r.forEach((n, i) => (n.ord = i)));
+    const nb = (n, d) => n.links.map(l => netOther(G, n, l)).filter(o => o.layer === n.layer + d);
+    const bary = (n, d) => { const v = nb(n, d).map(o => o.ord); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : n.ord; };
     for (let pass = 0; pass < 6; pass++) {
       const down = pass % 2 === 0;
       for (let k = down ? 1 : rows.length - 2; down ? k < rows.length : k >= 0; k += down ? 1 : -1) {
@@ -102,75 +123,189 @@ function netLayout(G) {
         rows[k].forEach((n, i) => (n.ord = i));
       }
     }
-    /* x near the neighbours, keeping the order and the spacing */
-    const step = NODE_W + COL_GAP;
-    rows.forEach(r => r.forEach((n, i) => (n.x = i * step)));
-    const want = (n, d) => { const v = n.links.map(l => other(n, l)).filter(o => d.includes(o.layer - n.layer)).map(o => o.x); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : n.x; };
+    rows.forEach(r => r.forEach((n, i) => (n.a = i * along)));
+    const want = (n, d) => { const v = nb(n, d).map(o => o.a); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : n.a; };
     for (let pass = 0; pass < 8; pass++) {
       for (const r of pass % 2 ? [...rows].reverse() : rows) {
         if (!r.length) continue;
-        const d = r.map(n => want(n, pass % 2 ? [1] : [-1]));
-        const pos = [...d];
-        for (let i = 1; i < pos.length; i++) pos[i] = Math.max(pos[i], pos[i - 1] + step);
-        const shift = d.reduce((s, x, i) => s + x - pos[i], 0) / d.length;
-        r.forEach((n, i) => (n.x = pos[i] + shift));
+        const d = r.map(n => want(n, pass % 2 ? 1 : -1)), p = [...d];
+        for (let i = 1; i < p.length; i++) p[i] = Math.max(p[i], p[i - 1] + along);
+        const shift = d.reduce((s, x, i) => s + x - p[i], 0) / d.length;
+        r.forEach((n, i) => (n.a = p[i] + shift));
       }
     }
-    const minX = Math.min(...list.map(n => n.x)), maxX = Math.max(...list.map(n => n.x));
-    for (const n of list) { n.x += x0 - minX; n.y = n.layer * (NODE_H + ROW_GAP); maxY = Math.max(maxY, n.y + NODE_H); }
-    x0 += maxX - minX + NODE_W + COMP_GAP;
+    const min = Math.min(...list.map(n => n.a)), max = Math.max(...list.map(n => n.a));
+    for (const n of list) {
+      const a = n.a - min + off, b = n.layer * across;
+      pos.set(n.id, horizontal ? { x: b, y: a } : { x: a, y: b });
+    }
+    off += max - min + (horizontal ? NODE_H : NODE_W) + COMP_GAP;
   }
-  /* nothing connected: a grid below */
-  const width = Math.max(x0 - COMP_GAP, 4 * (NODE_W + COL_GAP)), cols = Math.max(1, Math.floor((width + COL_GAP) / (NODE_W + COL_GAP)));
-  const looseY = comps.length ? maxY + LOOSE_GAP : 30;
-  loose.forEach((n, i) => { n.x = (i % cols) * (NODE_W + COL_GAP); n.y = looseY + Math.floor(i / cols) * (NODE_H + 18); });
-  const all = [...comps.flat(), ...loose];
-  const bounds = all.length ? { x: Math.min(...all.map(n => n.x)) - 30, y: Math.min(...all.map(n => n.y)) - (loose.length && !comps.length ? 60 : 30),
-    w: 0, h: 0 } : { x: 0, y: 0, w: 400, h: 200 };
-  if (all.length) { bounds.w = Math.max(...all.map(n => n.x + NODE_W)) + 30 - bounds.x; bounds.h = Math.max(...all.map(n => n.y + NODE_H)) + 30 - bounds.y; }
-  return { comps, loose, looseY, bounds };
+  return pos;
 }
-/* rack order, then top to bottom: keeps the diagram close to how the racks read */
-function physOrder(n) {
-  if (n.mains) return -1;
-  return doc.racks.indexOf(n.rack) * 1000 + (n.rack.units - (isZeroU(n.dev) ? 0 : n.dev.u));
+/* star: the most connected device in the middle, the others in rings by how many steps away,
+   each branch in its own slice of the circle */
+function starArrange(G, comps) {
+  const pos = new Map();
+  let x0 = 0;
+  for (const list of comps) {
+    const deg = n => n.links.reduce((s, l) => s + Math.max(1, l.cables.length), 0);
+    const hub = [...list].sort((p, q) => deg(q) - deg(p) || (p.dev && q.dev ? netTier(p.dev) - netTier(q.dev) : 0))[0];
+    const kids = new Map(), level = new Map([[hub.id, 0]]), queue = [hub];
+    for (let i = 0; i < queue.length; i++) {
+      const m = queue[i];
+      kids.set(m.id, []);
+      for (const l of m.links) { const o = netOther(G, m, l); if (!level.has(o.id)) { level.set(o.id, level.get(m.id) + 1); kids.get(m.id).push(o); queue.push(o); } }
+    }
+    const leaves = n => (n.leaves ??= kids.get(n.id).length ? kids.get(n.id).reduce((s, k) => s + leaves(k), 0) : 1);
+    list.forEach(n => delete n.leaves);
+    const depth = Math.max(...level.values()), count = Array(depth + 1).fill(0);
+    for (const v of level.values()) count[v]++;
+    const radius = [0];   // rings far enough apart, and long enough for their boxes
+    for (let l = 1; l <= depth; l++) radius[l] = Math.max(radius[l - 1] + 230, count[l] * (NODE_W + 40) / (2 * Math.PI));
+    const at = new Map();
+    const place = (n, a0, a1) => {   // centre of each box: its ring, in the middle of its slice
+      const r = radius[level.get(n.id)], mid = (a0 + a1) / 2;
+      at.set(n.id, { x: Math.cos(mid) * r, y: Math.sin(mid) * r });
+      let from = a0;
+      for (const k of kids.get(n.id)) { const span = (a1 - a0) * leaves(k) / leaves(n); place(k, from, from + span); from += span; }
+    };
+    place(hub, -Math.PI / 2, Math.PI * 1.5);
+    const xs = [...at.values()].map(p => p.x), ys = [...at.values()].map(p => p.y), minX = Math.min(...xs), minY = Math.min(...ys);
+    for (const [id, p] of at) pos.set(id, { x: p.x - minX + x0, y: p.y - minY });
+    x0 += Math.max(...xs) - minX + NODE_W + COMP_GAP;
+  }
+  return pos;
+}
+/* by rack: a column per rack, devices top to bottom as they are mounted; the building feed above */
+function rackArrange(G) {
+  const pos = new Map(), colW = NODE_W + 140;
+  doc.racks.forEach((r, i) => {
+    const devs = [...G.nodes.values()].filter(n => n.rack === r).sort((p, q) => physOrder(p) - physOrder(q));
+    devs.forEach((n, k) => pos.set(n.id, { x: i * colW, y: 140 + k * (NODE_H + 40) }));
+  });
+  if (G.nodes.has('#mains')) pos.set('#mains', { x: Math.max(0, (doc.racks.length - 1) * colW / 2), y: 0 });
+  return pos;
+}
+function netArrange(G, style) {
+  const { comps, loose } = netComponents(G);
+  const pos = style === 'racks' ? rackArrange(G) : style === 'star' ? starArrange(G, comps) : layeredArrange(G, comps, style === 'lr');
+  let looseY = null;
+  if (style !== 'racks' && loose.length) {   // nothing connected: a grid below the rest
+    const placed = [...pos.values()];
+    const minX = placed.length ? Math.min(...placed.map(p => p.x)) : 0, maxX = placed.length ? Math.max(...placed.map(p => p.x)) + NODE_W : 0;
+    looseY = placed.length ? Math.max(...placed.map(p => p.y)) + NODE_H + LOOSE_GAP : 0;
+    const cols = Math.max(4, Math.floor((maxX - minX + COL_GAP) / (NODE_W + COL_GAP)));
+    loose.forEach((n, i) => pos.set(n.id, { x: minX + (i % cols) * (NODE_W + COL_GAP), y: looseY + Math.floor(i / cols) * (NODE_H + COL_GAP) }));
+  }
+  for (const p of pos.values()) { p.x = snapTo(p.x); p.y = snapTo(p.y); }
+  return { pos, looseY: looseY == null ? null : snapTo(looseY) };
 }
 
-/* ---------- drawing ---------- */
+/* ---------- positions ---------- */
+const overlaps = (p, list) => list.some(q => p.x < q.x + NODE_W + 10 && q.x < p.x + NODE_W + 10 && p.y < q.y + NODE_H + 10 && q.y < p.y + NODE_H + 10);
+/* moved boxes keep their place; a box with no place yet goes next to something it connects to, or below */
+function netPlace(G) {
+  const stored = doc.netPos?.[G.layer];
+  if (!stored) {
+    const A = netArrange(G, 'tree');
+    for (const n of G.nodes.values()) Object.assign(n, A.pos.get(n.id));
+    return { auto: true, looseY: A.looseY };
+  }
+  const placed = [], todo = [];
+  for (const n of G.nodes.values()) {
+    const p = stored[n.id];
+    if (p) { n.x = p[0]; n.y = p[1]; placed.push(n); } else todo.push(n);
+  }
+  for (const n of todo.sort((p, q) => physOrder(p) - physOrder(q))) {
+    const near = n.links.map(l => netOther(G, n, l)).find(o => placed.includes(o));
+    const tries = [];
+    if (near) for (let ring = 1; ring < 8; ring++) for (const dx of [0, 1, -1, 2, -2, 3, -3]) tries.push({ x: near.x + dx * (NODE_W + COL_GAP), y: near.y + ring * (NODE_H + 60) });
+    const maxY = placed.length ? Math.max(...placed.map(q => q.y)) : -NODE_H, minX = placed.length ? Math.min(...placed.map(q => q.x)) : 0;
+    for (let i = 0; i < 400; i++) tries.push({ x: minX + (i % 20) * (NODE_W + COL_GAP), y: maxY + NODE_H + LOOSE_GAP + Math.floor(i / 20) * (NODE_H + COL_GAP) });
+    const spot = tries.find(t => !overlaps(t, placed)) || tries[tries.length - 1];
+    n.x = snapTo(spot.x); n.y = snapTo(spot.y);
+    placed.push(n);
+  }
+  return { auto: false };
+}
+function netBounds(G) {
+  const all = [...G.nodes.values()];
+  if (!all.length) return { x: 0, y: 0, w: 400, h: 200 };
+  const x = Math.min(...all.map(n => n.x)) - 30, y = Math.min(...all.map(n => n.y)) - 40;
+  return { x, y, w: Math.max(...all.map(n => n.x + NODE_W)) + 30 - x, h: Math.max(...all.map(n => n.y + NODE_H)) + 30 - y };
+}
+
+/* ---------- links ----------
+   A link leaves each box from the side facing the other box (top / bottom when one is clearly above
+   the other, else left / right); several links on one side spread along it. Round links are curves,
+   angled ones run in straight lines with right-angle turns. */
+const SIDE_N = { t: [0, -1], b: [0, 1], l: [-1, 0], r: [1, 0] };
 function netLinkGeometry(G) {
-  /* spread the link ends along each box's top and bottom edge, ordered by where the other box is */
-  const ends = new Map(), push = (n, edge, l, ox) => (ends.get(n.id + edge) || ends.set(n.id + edge, []).get(n.id + edge)).push({ l, ox });
-  const geo = new Map();
+  const geo = new Map(), ends = new Map(), flow = netFlow(G.layer);
+  const hit = (x0, x1, y0, y1, A, B) => [...G.nodes.values()].some(o => o !== A && o !== B && o.x < x1 && o.x + NODE_W > x0 && o.y < y1 && o.y + NODE_H > y0);
   for (const l of G.links.values()) {
     const A = G.nodes.get(l.a), B = G.nodes.get(l.b);
-    if (A.layer === B.layer && A.y === B.y) { geo.set(l.id, { same: true, A, B }); continue; }
-    const [U, D] = A.y < B.y ? [A, B] : [B, A];
-    geo.set(l.id, { U, D, flip: U !== A });
-    push(U, 'b', l, D.x); push(D, 't', l, U.x);
-  }
-  for (const [key, list] of ends) {
-    list.sort((p, q) => p.ox - q.ox);
-    const span = Math.min(NODE_W * 0.7, (list.length - 1) * 16);
-    list.forEach((e, i) => { const g = geo.get(e.l.id), off = list.length > 1 ? -span / 2 + i * span / (list.length - 1) : 0; if (key.endsWith('b')) g.ux = off; else g.dx = off; });
-  }
-  for (const g of geo.values()) {
-    if (g.same) {
-      const [L, R] = g.A.x < g.B.x ? [g.A, g.B] : [g.B, g.A];
-      if (R.x - L.x <= NODE_W + COL_GAP + 1) { g.d = `M${L.x + NODE_W},${L.y + NODE_H / 2} L${R.x},${R.y + NODE_H / 2}`; g.mid = { x: (L.x + NODE_W + R.x) / 2, y: L.y + NODE_H / 2 }; }
-      else { const y = L.y + NODE_H, x1 = L.x + NODE_W / 2, x2 = R.x + NODE_W / 2; g.d = `M${x1},${y} C${x1},${y + 46} ${x2},${y + 46} ${x2},${y}`; g.mid = { x: (x1 + x2) / 2, y: y + 35 }; }
-      g.ends = [[L, L.x + NODE_W, L.y + NODE_H / 2], [R, R.x, R.y + NODE_H / 2]];
-      continue;
+    const dx = (B.x - A.x), dy = (B.y - A.y), gapX = Math.abs(dx) - NODE_W, gapY = Math.abs(dy) - NODE_H;
+    // top-down diagrams join top and bottom whenever one box is clearly above the other; left-to-right ones join the sides
+    const vertical = flow === 'h' ? gapX <= 20 : gapY > 20 || gapX <= 10;
+    let sa = vertical ? (dy >= 0 ? 'b' : 't') : (dx >= 0 ? 'r' : 'l'), sb = { t: 'b', b: 't', l: 'r', r: 'l' }[sa], around = null;
+    const [L, R] = dx >= 0 ? [A, B] : [B, A], [T, D] = dy >= 0 ? [A, B] : [B, A];
+    if (!vertical && hit(L.x + NODE_W, R.x, Math.min(A.y, B.y) + NODE_H * 0.25, Math.max(A.y, B.y) + NODE_H * 0.75, A, B)) around = 'under';
+    if (vertical && hit(Math.min(A.x, B.x) + NODE_W * 0.3, Math.max(A.x, B.x) + NODE_W * 0.7, T.y + NODE_H, D.y, A, B)) around = 'beside';
+    if (around === 'under') sa = sb = 'b';   // a box in the way: go under the row, or beside the column, instead of through it
+    if (around === 'beside') sa = sb = 'r';
+    const g = { l, A, B, sa, sb, vertical, around };
+    geo.set(l.id, g);
+    for (const [N, s, O] of [[A, sa, B], [B, sb, A]]) {
+      const k = N.id + s;
+      (ends.get(k) || ends.set(k, []).get(k)).push({ g, end: N === A ? 'a' : 'b', o: s === 't' || s === 'b' ? O.x : O.y });
     }
-    const x1 = g.U.x + NODE_W / 2 + (g.ux || 0), y1 = g.U.y + NODE_H, x2 = g.D.x + NODE_W / 2 + (g.dx || 0), y2 = g.D.y, dy = Math.max(30, (y2 - y1) / 2);
-    g.d = `M${x1},${y1} C${x1},${y1 + dy} ${x2},${y2 - dy} ${x2},${y2}`;
-    g.mid = { x: (x1 + x2) / 2, y: (y1 + y2) / 2 };
-    g.ends = [[g.U, x1, y1], [g.D, x2, y2]];
+  }
+  for (const [k, list] of ends) {
+    const side = k.slice(-1), len = side === 't' || side === 'b' ? NODE_W * 0.7 : NODE_H * 0.6;
+    list.sort((p, q) => p.o - q.o);
+    const span = Math.min(len, (list.length - 1) * (side === 't' || side === 'b' ? 16 : 12));
+    list.forEach((e, i) => (e.g['off' + e.end] = list.length > 1 ? -span / 2 + i * span / (list.length - 1) : 0));
+  }
+  const anchor = (N, s, off) => s === 't' ? [N.x + NODE_W / 2 + off, N.y] : s === 'b' ? [N.x + NODE_W / 2 + off, N.y + NODE_H]
+    : s === 'l' ? [N.x, N.y + NODE_H / 2 + off] : [N.x + NODE_W, N.y + NODE_H / 2 + off];
+  const angled = netSet().links === 'angled';
+  for (const g of geo.values()) {
+    const [x1, y1] = anchor(g.A, g.sa, g.offa || 0), [x2, y2] = anchor(g.B, g.sb, g.offb || 0);
+    const [n1, n2] = [SIDE_N[g.sa], SIDE_N[g.sb]];
+    if (g.around === 'under') {   // down from both, across below the lower of the two
+      const yU = Math.max(y1, y2) + 26 + Math.abs((g.offa || 0) + (g.offb || 0)) / 2;
+      g.d = angled ? roundedPath([{ x: x1, y: y1 }, { x: x1, y: yU }, { x: x2, y: yU }, { x: x2, y: y2 }], 6)
+        : `M${x1},${y1} C${x1},${yU + 12} ${x2},${yU + 12} ${x2},${y2}`;
+      g.mid = { x: (x1 + x2) / 2, y: angled ? yU : yU + 2 };
+    } else if (g.around === 'beside') {   // out to the right of both, along beside them
+      const xR = Math.max(x1, x2) + 26 + Math.abs((g.offa || 0) + (g.offb || 0)) / 2;
+      g.d = angled ? roundedPath([{ x: x1, y: y1 }, { x: xR, y: y1 }, { x: xR, y: y2 }, { x: x2, y: y2 }], 6)
+        : `M${x1},${y1} C${xR + 12},${y1} ${xR + 12},${y2} ${x2},${y2}`;
+      g.mid = { x: angled ? xR : xR + 2, y: (y1 + y2) / 2 };
+    } else if (angled) {
+      const pts = g.vertical
+        ? (() => { const m = (y1 + y2) / 2; return [{ x: x1, y: y1 }, { x: x1, y: m }, { x: x2, y: m }, { x: x2, y: y2 }]; })()
+        : (() => { const m = (x1 + x2) / 2; return [{ x: x1, y: y1 }, { x: m, y: y1 }, { x: m, y: y2 }, { x: x2, y: y2 }]; })();
+      g.d = roundedPath(pts, 6);
+      g.mid = { x: (pts[1].x + pts[2].x) / 2, y: (pts[1].y + pts[2].y) / 2 };
+    } else {
+      const c = Math.max(30, (g.vertical ? Math.abs(y2 - y1) : Math.abs(x2 - x1)) / 2);
+      const c1 = [x1 + n1[0] * c, y1 + n1[1] * c], c2 = [x2 + n2[0] * c, y2 + n2[1] * c];
+      g.d = `M${x1},${y1} C${c1[0]},${c1[1]} ${c2[0]},${c2[1]} ${x2},${y2}`;
+      g.mid = { x: (x1 + 3 * c1[0] + 3 * c2[0] + x2) / 8, y: (y1 + 3 * c1[1] + 3 * c2[1] + y2) / 8 };
+    }
+    g.ends = [[g.A, g.sa, x1, y1], [g.B, g.sb, x2, y2]];
   }
   return geo;
 }
+
+/* ---------- drawing ---------- */
 function netNodeSVG(n, G) {
-  if (n.mains) return `<g class="nn mains" transform="translate(${n.x},${n.y})"><rect class="nn-box" width="${NODE_W}" height="${NODE_H}" rx="10"/>`
-    + `<text class="nn-name" x="${NODE_W / 2}" y="25" text-anchor="middle">Building power</text><text class="nn-sub" x="${NODE_W / 2}" y="42" text-anchor="middle">where the power chain starts</text></g>`;
+  const box = (cls, inner, attrs = '') => `<g class="nn ${cls}" data-nnode="${esc(n.id)}"${attrs} transform="translate(${n.x},${n.y})">${inner}</g>`;
+  if (n.mains) return box('mains', `<rect class="nn-box" width="${NODE_W}" height="${NODE_H}" rx="10"/>`
+    + `<text class="nn-name" x="${NODE_W / 2}" y="27" text-anchor="middle">Building power</text><text class="nn-sub" x="${NODE_W / 2}" y="44" text-anchor="middle">where the power chain starts</text>`);
   const d = n.dev, cs = ui.conn?.devs[d.id], sel = isSel('device', d.id) || ui.multi.has(d.id);
   const chk = ui.check && cs?.level ? ' chk-' + cs.level : '';
   let sub;
@@ -181,14 +316,15 @@ function netNodeSVG(n, G) {
   const loc = `${n.rack.name} · ${isZeroU(d) ? '0U ' + d.side : d.h > 1 ? `U${d.u}–${d.u + d.h - 1}` : 'U' + d.u}`;
   const lights = [['Power', cs?.power, cs?.pWhy], ['Data', cs?.data, cs?.dWhy]].filter(l => l[1] && l[1] !== 'na')
     .map(([w, st, why], i, all) => `<circle class="led led-${st}" cx="${NODE_W - 12 - (all.length - 1 - i) * 10}" cy="12" r="3.4"><title>${w}: ${esc(why)}</title></circle>`).join('');
-  return `<g class="nn k-${T_(d).cat}${sel ? ' sel' : ''}${chk}" data-ndev="${d.id}" transform="translate(${n.x},${n.y})"${d.color ? ` style="--c:${d.color}"` : ''}>`
-    + `<rect class="nn-box" width="${NODE_W}" height="${NODE_H}" rx="8"><title>${esc(`${d.name} · ${T_(d).label} · ${loc}`)}</title></rect>`
-    + `<rect class="nn-stripe" x="5" y="7" width="4" height="${NODE_H - 14}" rx="2"/>`
-    + `<text class="nn-name" x="16" y="20">${esc(clip(d.name, 19))}</text>`
-    + `<text class="nn-sub" x="16" y="35">${esc(clip(sub, 26))}</text>`
-    + `<text class="nn-loc" x="16" y="49">${esc(clip(loc, 28))}</text>${lights}</g>`;
+  return box(`k-${T_(d).cat}${sel ? ' sel' : ''}${chk}${n.links.length ? '' : ' loose'}`,
+    `<rect class="nn-box" width="${NODE_W}" height="${NODE_H}" rx="8"><title>${esc(`${d.name} · ${T_(d).label} · ${loc} · drag to move`)}</title></rect>`
+    + `<rect class="nn-stripe" x="5" y="8" width="4" height="${NODE_H - 16}" rx="2"/>`
+    + `<text class="nn-name" x="16" y="21">${esc(clip(d.name, 20))}</text>`
+    + `<text class="nn-sub" x="16" y="37">${esc(clip(sub, 27))}</text>`
+    + `<text class="nn-loc" x="16" y="51">${esc(clip(loc, 29))}</text>${lights}`,
+    ` data-ndev="${d.id}"${d.color ? ` style="--c:${d.color}"` : ''}`);
 }
-function netLinkSVG(l, g, G, k) {
+function netLinkSVG(l, g, k) {
   if (l.feed) return `<g class="nl feed"><path class="nl-line" d="${g.d}"/></g>`;
   const c0 = l.cables[0].c, t = ctype(c0.type), n = l.cables.length;
   const sel = l.cables.some(x => isSel('cable', x.c.id)), near = isSel('device', l.a) || isSel('device', l.b);
@@ -198,47 +334,74 @@ function netLinkSVG(l, g, G, k) {
     + `<title>${esc(l.cables.map(x => `${cableLabel(x.c)} · ${ctype(x.c.type).name}`).join('\n'))}</title>`;
   if (n > 1) s += `<circle class="nl-count" cx="${g.mid.x}" cy="${g.mid.y}" r="9"/><text class="nl-count-t" x="${g.mid.x}" y="${g.mid.y}">${n}</text>`;
   if (k >= 0.8 || sel || near) {   // port names at both ends, once there is room to read them
-    for (const [N, x, y] of g.ends) {
-      const end = N.id === l.a ? 'pa' : 'pb', below = y === N.y + NODE_H;
-      s += `<text class="nl-port" x="${x + 5}" y="${below ? y + 11 : y === N.y ? y - 5 : y - 6}">${esc(ports(end))}</text>`;
+    for (const [N, side, x, y] of g.ends) {
+      const txt = esc(ports(N.id === l.a ? 'pa' : 'pb'));
+      s += side === 't' ? `<text class="nl-port" x="${x + 5}" y="${y - 6}">${txt}</text>`
+        : side === 'b' ? `<text class="nl-port" x="${x + 5}" y="${y + 12}">${txt}</text>`
+        : `<text class="nl-port" x="${side === 'r' ? x + 6 : x - 6}" y="${y - 5}"${side === 'l' ? ' text-anchor="end"' : ''}>${txt}</text>`;
     }
   }
   return s + '</g>';
 }
-function netSVG(G, Lo, k) {
-  const geo = netLinkGeometry(G);
+/* the grid lives outside the camera group, as a pattern that follows the camera */
+function netGridSVG() {
+  if (!netSet().grid) return '';
+  const { x, y, k } = ui.net.cam, minor = GRID * k >= 7;
+  return `<defs><pattern id="netGridMinor" width="${GRID}" height="${GRID}" patternUnits="userSpaceOnUse" patternTransform="translate(${x},${y}) scale(${k})"><path class="net-grid" d="M${GRID} 0H0V${GRID}"/></pattern>`
+    + `<pattern id="netGridMajor" width="${GRID * 5}" height="${GRID * 5}" patternUnits="userSpaceOnUse" patternTransform="translate(${x},${y}) scale(${k})"><path class="net-grid major" d="M${GRID * 5} 0H0V${GRID * 5}"/></pattern></defs>`
+    + (minor ? '<rect class="net-grid-bg" width="100%" height="100%" fill="url(#netGridMinor)"/>' : '')
+    + '<rect class="net-grid-bg" width="100%" height="100%" fill="url(#netGridMajor)"/>';
+}
+function renderNet() {
+  const G = ui.net.G, P = ui.net.placed, k = ui.net.cam.k, geo = netLinkGeometry(G);
   let s = '<g class="nl-all">';
-  for (const l of G.links.values()) s += netLinkSVG(l, geo.get(l.id), G, k);
+  for (const l of G.links.values()) s += netLinkSVG(l, geo.get(l.id), k);
   s += '</g><g class="nn-all">';
   for (const n of G.nodes.values()) s += netNodeSVG(n, G);
   s += '</g>';
-  if (Lo.loose.length) s += `<text class="net-group" x="0" y="${Lo.looseY - 14}">${G.layer === 'power' ? 'No power cable' : 'No data connection'} · ${Lo.loose.length}</text>`;
-  return s;
+  const loose = [...G.nodes.values()].filter(n => !n.links.length).length;
+  if (P.auto && loose && P.looseY != null) s += `<text class="net-group" x="${Math.min(...[...G.nodes.values()].map(n => n.x))}" y="${P.looseY - 14}">${G.layer === 'power' ? 'No power cable' : 'No data connection'} · ${loose}</text>`;
+  netSvg.innerHTML = netGridSVG() + `<g id="netCam" transform="translate(${ui.net.cam.x},${ui.net.cam.y}) scale(${k})">${s}</g>`;
+  ui.net.drawnK = k;
 }
 
 /* ---------- view ---------- */
 const netVisible = () => ui.pane === 'net' || ui.pane === 'split';
 function drawNet() {
   if (!netVisible()) return;
-  const G = netGraph(ui.net.layer), Lo = netLayout(G);
-  ui.net.G = G; ui.net.bounds = Lo.bounds;
+  const G = netGraph(ui.net.layer);
+  ui.net.G = G;
+  ui.net.placed = netPlace(G);
+  ui.net.bounds = netBounds(G);
   $('#netEmpty').hidden = G.nodes.size > 0;
   $('#netEmpty p').textContent = !doc.racks.length ? 'Add racks and equipment to see how they connect.'
     : ui.net.layer === 'power' ? 'No equipment with power ports yet.' : 'No equipment with data ports yet.';
   if (!ui.net.userMoved) fitNet(false);
   revealNetSel();
-  netSvg.innerHTML = `<g id="netCam" transform="translate(${ui.net.cam.x},${ui.net.cam.y}) scale(${ui.net.cam.k})">${netSVG(G, Lo, ui.net.cam.k)}</g>`;
-  ui.net.drawnK = ui.net.cam.k;
-  for (const b of document.querySelectorAll('#netLayerSeg button')) b.classList.toggle('on', b.dataset.layer === ui.net.layer);
+  renderNet();
+  syncNetBar();
   const used = new Map();
   for (const l of G.links.values()) for (const x of l.cables) used.set(x.c.type, (used.get(x.c.type) || 0) + 1);
   $('#netLegend').hidden = !used.size;
   $('#netLegend').innerHTML = [...used].map(([id, n]) => { const t = ctype(id); return `<span><i class="sw line${t.kind === 'power' ? ' thick' : ''}" style="--c:${t.color}"></i>${esc(t.name)} <span class="muted">${n}</span></span>`; }).join('');
 }
-function netCamOnly() {   // pan: move the drawing, redraw only when the zoom changed (port labels depend on it)
+function syncNetBar() {
+  const s = netSet();
+  for (const b of document.querySelectorAll('#netLayerSeg button')) b.classList.toggle('on', b.dataset.layer === ui.net.layer);
+  for (const b of document.querySelectorAll('#netLinkSeg button')) b.classList.toggle('on', b.dataset.links === s.links);
+  $('#netGridBtn').setAttribute('aria-pressed', s.grid);
+  $('#netSnapBtn').setAttribute('aria-pressed', s.grid && s.snap);
+  $('#netSnapBtn').disabled = !s.grid;
+  $('#netSnapBtn').title = s.grid ? `Snap boxes to the grid: ${s.snap ? 'on' : 'off'}` : 'Snap to the grid (turn the grid on first)';
+  const auto = !doc.netPos?.[ui.net.layer];
+  for (const b of document.querySelectorAll('#netArrangeMenu [data-arrange]')) b.classList.toggle('on', b.dataset.arrange === 'auto' && auto);
+}
+function netCamOnly() {   // pan: move the drawing and the grid, redraw only when the zoom changed (port labels depend on it)
   const cam = $('#netCam', netSvg);
   if (!cam || ui.net.cam.k !== ui.net.drawnK) return drawNet();
-  cam.setAttribute('transform', `translate(${ui.net.cam.x},${ui.net.cam.y}) scale(${ui.net.cam.k})`);
+  const { x, y, k } = ui.net.cam;
+  cam.setAttribute('transform', `translate(${x},${y}) scale(${k})`);
+  for (const p of netSvg.querySelectorAll('pattern')) p.setAttribute('patternTransform', `translate(${x},${y}) scale(${k})`);
 }
 function fitNet(draw = true) {
   const r = netSvg.getBoundingClientRect(), b = ui.net.bounds;
@@ -283,8 +446,17 @@ function revealInRacks(kind, id) {
     ui.cam.x += r.width / 2 - (x0 + x1) / 2; ui.cam.y += r.height / 2 - (y0 + y1) / 2; ui.userMoved = true;
   }
 }
+/* which way the diagram reads: 'h' after "Left to right", else top-down */
+const netFlow = layer => (doc.netPos?.[layer]?.['#flow'] === 'h' ? 'h' : 'v');
+/* keep every box where it is now, in this layer */
+function netFreeze() {
+  const P = {}, flow = netFlow(ui.net.layer);
+  for (const n of ui.net.G.nodes.values()) P[n.id] = [Math.round(n.x), Math.round(n.y)];
+  if (flow === 'h') P['#flow'] = 'h';
+  (doc.netPos ||= {})[ui.net.layer] = P;
+}
 
-/* ---------- interaction: drag to pan, wheel or pinch to zoom, click to select ---------- */
+/* ---------- interaction: drag a box to move it, drag empty space to pan, wheel or pinch to zoom, click to select ---------- */
 const netTouch = new Map();
 let netDrag = null, netPinch = null, netLastLink = { id: null, t: 0 };
 netSvg.addEventListener('contextmenu', e => e.preventDefault());
@@ -297,7 +469,9 @@ netSvg.addEventListener('pointerdown', e => {
     netDrag = null;
     return;
   }
-  netDrag = { sx: e.clientX, sy: e.clientY, cx: ui.net.cam.x, cy: ui.net.cam.y, target: e.target, moved: false };
+  if (e.button !== 0) { netDrag = { sx: e.clientX, sy: e.clientY, cx: ui.net.cam.x, cy: ui.net.cam.y, target: e.target, moved: false, pan: true }; return; }
+  const node = e.target.closest?.('[data-nnode]');
+  netDrag = { sx: e.clientX, sy: e.clientY, cx: ui.net.cam.x, cy: ui.net.cam.y, target: e.target, moved: false, node: node?.dataset.nnode };
 });
 netSvg.addEventListener('pointermove', e => {
   if (netTouch.has(e.pointerId)) netTouch.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -307,13 +481,27 @@ netSvg.addEventListener('pointermove', e => {
     ui.net.userMoved = true;
     return netCamOnly();
   }
-  if (!netDrag) return;
-  if (!netDrag.moved && Math.hypot(e.clientX - netDrag.sx, e.clientY - netDrag.sy) < 4) return;
-  netDrag.moved = true;
+  const d = netDrag;
+  if (!d) return;
+  if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 4) return;
+  d.moved = true;
+  ui.net.userMoved = true;   // the camera stays put while boxes move
+  if (d.node && !d.pan) {
+    /* move the box, or every selected box when it is one of them */
+    if (!d.group) {
+      const G = ui.net.G, ids = ui.multi.size > 1 && ui.multi.has(d.node) ? [...ui.multi].filter(id => G.nodes.has(id)) : [d.node];
+      d.group = ids.map(id => { const n = G.nodes.get(id); return { n, x0: n.x, y0: n.y }; });
+      netSvg.classList.add('moving');
+    }
+    const k = ui.net.cam.k, s = netSet(), lead = d.group.find(g => g.n.id === d.node) || d.group[0];
+    let dx = (e.clientX - d.sx) / k, dy = (e.clientY - d.sy) / k;
+    if (s.grid && s.snap) { dx = snapTo(lead.x0 + dx) - lead.x0; dy = snapTo(lead.y0 + dy) - lead.y0; }
+    for (const g of d.group) { g.n.x = g.x0 + dx; g.n.y = g.y0 + dy; }
+    return renderNet();
+  }
   netSvg.classList.add('panning');
-  ui.net.cam.x = netDrag.cx + e.clientX - netDrag.sx;
-  ui.net.cam.y = netDrag.cy + e.clientY - netDrag.sy;
-  ui.net.userMoved = true;
+  ui.net.cam.x = d.cx + e.clientX - d.sx;
+  ui.net.cam.y = d.cy + e.clientY - d.sy;
   netCamOnly();
 });
 function netPointerEnd(e) {
@@ -321,8 +509,15 @@ function netPointerEnd(e) {
   if (netPinch) { if (netTouch.size < 2) netPinch = null; netDrag = null; return; }
   const d = netDrag;
   netDrag = null;
-  netSvg.classList.remove('panning');
-  if (!d || d.moved || e.type === 'pointercancel') return;
+  netSvg.classList.remove('panning', 'moving');
+  if (!d || e.type === 'pointercancel') return d?.group && drawNet();
+  if (d.group) {   // dropped: keep the new places (one undo step)
+    const id = d.node;
+    if (G_isDevice(id) && !ui.multi.has(id)) ui.sel = { kind: 'device', id };
+    ui.net.lastSel = ui.sel && ui.sel.kind + ui.sel.id;
+    return mutate(netFreeze);
+  }
+  if (d.moved || d.pan) return;
   const node = d.target.closest?.('[data-ndev]'), link = d.target.closest?.('[data-nlink]');
   if (node) {
     const id = node.dataset.ndev;
@@ -343,8 +538,10 @@ function netPointerEnd(e) {
     revealInRacks('cable', c.id);
     return select('cable', c.id);
   }
+  if (d.target.closest?.('[data-nnode]')) return;   // the building feed: nothing to select
   if (ui.sel || ui.multi.size) select(null);
 }
+const G_isDevice = id => !!ui.net.G?.nodes.get(id)?.dev;
 netSvg.addEventListener('pointerup', netPointerEnd);
 netSvg.addEventListener('pointercancel', netPointerEnd);
 netSvg.addEventListener('wheel', e => {
@@ -352,6 +549,8 @@ netSvg.addEventListener('wheel', e => {
   const r = netSvg.getBoundingClientRect();
   netZoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.0015));
 }, { passive: false });
+
+/* ---------- the bar: layer, arrange, grid, snap, link style ---------- */
 $('#netLayerSeg').addEventListener('click', e => {
   const b = e.target.closest('[data-layer]');
   if (!b || b.dataset.layer === ui.net.layer) return;
@@ -359,6 +558,35 @@ $('#netLayerSeg').addEventListener('click', e => {
   try { localStorage.setItem('rackviz.netLayer', ui.net.layer); } catch (err) { /* ignore */ }
   ui.net.userMoved = false;
   drawNet();
+});
+const netSetting = (k, v) => { netSet()[k] = v; save(); drawNet(); };
+$('#netGridBtn').addEventListener('click', () => netSetting('grid', !netSet().grid));
+$('#netSnapBtn').addEventListener('click', () => netSetting('snap', !netSet().snap));
+$('#netLinkSeg').addEventListener('click', e => { const b = e.target.closest('[data-links]'); if (b) netSetting('links', b.dataset.links); });
+const arrangeBtn = $('#netArrangeBtn'), arrangeMenu = $('#netArrangeMenu');
+arrangeMenu.innerHTML = Object.entries(ARRANGE).map(([k, a]) => `<button role="menuitem" data-arrange="${k}"><span class="grow"><span class="ci-main">${a.label}</span><span class="ci-sub">${a.hint}</span></span></button>`).join('')
+  + '<hr><button role="menuitem" data-arrange="auto"><span class="grow"><span class="ci-main">Automatic</span><span class="ci-sub">Arranges itself again as cables change; forgets moved boxes</span></span></button>';
+const showArrange = on => { arrangeMenu.hidden = !on; arrangeBtn.setAttribute('aria-expanded', on); };
+arrangeBtn.addEventListener('click', e => { e.stopPropagation(); showArrange(arrangeMenu.hidden); });
+document.addEventListener('click', e => { if (!arrangeMenu.hidden && !e.target.closest('#netArrangeWrap')) showArrange(false); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !arrangeMenu.hidden) { showArrange(false); arrangeBtn.focus(); } });
+arrangeMenu.addEventListener('click', e => {
+  const b = e.target.closest('[data-arrange]');
+  if (!b) return;
+  showArrange(false);
+  const style = b.dataset.arrange, layer = ui.net.layer;
+  ui.net.userMoved = false;   // fit the new arrangement
+  if (style === 'auto') {
+    if (!doc.netPos?.[layer]) return drawNet();
+    return mutate(() => { delete doc.netPos[layer]; if (!Object.keys(doc.netPos).length) delete doc.netPos; });
+  }
+  const A = netArrange(netGraph(layer), style);
+  mutate(() => {
+    const P = Object.fromEntries([...A.pos].map(([id, p]) => [id, [p.x, p.y]]));
+    if (style === 'lr') P['#flow'] = 'h';
+    (doc.netPos ||= {})[layer] = P;
+  });
+  toast(`Arranged as ${ARRANGE[style].label.toLowerCase()}. Drag boxes to adjust; Undo puts it back`);
 });
 const netCenterZoom = f => { const r = netSvg.getBoundingClientRect(); netZoomAt(r.width / 2, r.height / 2, f); };
 $('#netZoomIn').addEventListener('click', () => netCenterZoom(1.25));

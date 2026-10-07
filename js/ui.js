@@ -1518,42 +1518,72 @@ importFile.addEventListener('change', async () => {
     if (T.ready) frame3D();
   } catch { toast('That file is not a rack layout'); }
 });
+/* for drastic buttons: the first click changes the label, a second click within 3 seconds goes ahead (true) */
+function armTwice(btn, lbl, text) {
+  const was = btn.dataset.label ?? lbl.textContent;
+  clearTimeout(btn.armTimer);
+  const reset = () => { delete btn.dataset.armed; delete btn.dataset.label; btn.classList.remove('armed'); lbl.textContent = was; };
+  if (btn.dataset.armed) { reset(); return true; }
+  btn.dataset.armed = '1'; btn.dataset.label = was; btn.classList.add('armed'); lbl.textContent = text;
+  btn.armTimer = setTimeout(reset, 3000);
+  return false;
+}
 $('#newBtn').addEventListener('click', e => {
   e.stopPropagation();
-  const btn = e.currentTarget, lbl = btn.querySelector('span');
-  const reset = () => { delete btn.dataset.armed; btn.classList.remove('armed'); lbl.textContent = 'New empty layout'; };
-  if (!btn.dataset.armed) {
-    btn.dataset.armed = '1'; btn.classList.add('armed'); lbl.textContent = 'Click again to clear everything';
-    setTimeout(reset, 3000);
-    return;
-  }
-  reset();
+  const btn = e.currentTarget;
+  if (!armTwice(btn, btn.querySelector('span'), 'Click again to clear everything')) return;
   showMenu(false);
   clearLayout();
   fileBtn.focus();
 });
 /* an empty layout, keeping the settings (units, colours, cable types); one undo step brings the old one back */
 function clearLayout() {
-  hideExample();
   ui.sel = null; ui.multi.clear(); ui.pending = null; ui.measure = null;
   mutate(() => { const s = doc.settings; doc = blankDoc(); doc.settings = s; });
+  hideExample();   // after mutate, so the undo step still knows the racks were an example
   fit(); renderAll();
   toast('Started an empty layout. Undo (Ctrl+Z) brings the previous one back');
 }
+/* an example in place of the current layout, keeping the settings (units, colours, cable types); one undo step brings the old layout back */
+function loadExample(id) {
+  ui.sel = null; ui.multi.clear(); ui.pending = null; ui.measure = null; ui.net.userMoved = false;
+  mutate(() => { doc = buildExample(id, doc.settings); });
+  showExample();
+  fit(); renderAll();
+  if (T.ready) frame3D();
+  toast(`Opened the example “${EXAMPLES[id].label}”. Undo (Ctrl+Z) brings the previous layout back`);
+}
 
-/* first visit: the racks are an example. Say so, and offer to start empty (until either button is used) */
+/* a note over the racks while they are an example: say so, and offer to start empty (until either button is used) */
 const exampleNote = $('#exampleNote');
 try {
   if (firstVisit) localStorage.setItem('rackviz.example', '1');
   exampleNote.hidden = localStorage.getItem('rackviz.example') !== '1';
 } catch (e) { exampleNote.hidden = !firstVisit; }
-function hideExample() {
-  exampleNote.hidden = true;
-  try { localStorage.removeItem('rackviz.example'); } catch (e) { /* ignore */ }
+ui.example = !exampleNote.hidden;
+function setExample(on) {
+  ui.example = on;
+  exampleNote.hidden = !on;
+  try { if (on) localStorage.setItem('rackviz.example', '1'); else localStorage.removeItem('rackviz.example'); } catch (e) { /* ignore */ }
 }
+const showExample = () => setExample(true), hideExample = () => setExample(false);
 $('#exampleClear').addEventListener('click', () => { clearLayout(); $('#emptyAdd').focus(); });
 $('#exampleKeep').addEventListener('click', () => { hideExample(); rackListEl.querySelector('[tabindex="0"]')?.focus(); });
-window.addEventListener('storage', e => { if (e.key === 'rackviz.example' && !e.newValue) exampleNote.hidden = true; });   // dismissed in another tab
+window.addEventListener('storage', e => { if (e.key === 'rackviz.example' && !e.newValue) { ui.example = false; exampleNote.hidden = true; } });   // dismissed in another tab
+
+/* the examples: in the File menu and on the empty screen. Replacing a layout of your own asks for a second click */
+$('#exampleMenu').insertAdjacentHTML('beforeend', Object.entries(EXAMPLES).map(([id, x]) =>
+  `<button role="menuitem" data-example="${id}"><svg class="ic"><use href="#i-rack"/></svg><span class="grow"><span class="ci-main">${esc(x.label)}</span><span class="ci-sub">${esc(x.hint)}</span></span></button>`).join(''));
+$('#emptyExamples').innerHTML = Object.entries(EXAMPLES).map(([id, x]) => `<button class="link" data-example="${id}">${esc(x.label)}</button>`).join('');
+function pickExample(e) {
+  const btn = e.target.closest('[data-example]');
+  if (!btn) return;
+  if (doc.racks.length && !ui.example && !armTwice(btn, btn.querySelector('.ci-main'), 'Click again to replace your layout')) return;
+  loadExample(btn.dataset.example);
+  if (btn.closest('#fileMenu')) { showMenu(false); fileBtn.focus(); } else rackListEl.querySelector('[tabindex="0"]')?.focus();
+}
+fileMenu.addEventListener('click', pickExample);
+$('#emptyExamples').addEventListener('click', pickExample);
 
 /* theme: auto -> light -> dark */
 const themeBtn = $('#themeBtn');

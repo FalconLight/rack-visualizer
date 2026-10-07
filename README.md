@@ -16,6 +16,7 @@ A minimal tool to plan the space networking equipment takes up in racks.
 - Reorder racks by dragging them in the rack list; duplicating a rack copies the cables inside it
 - Side panels that fold away for more room (the tabs on the drawing's edges, or <kbd>[</kbd> and <kbd>]</kbd>); double-click any device, rack or cable (in 2D, 3D or the diagram) to open its properties
 - A guided tour of the main functions on the first visit; skip it any time, and take it again from Help (?). The first visit opens an example layout, with a note to start an empty one
+- **Examples** to start from, in the File menu (and on the empty screen): a small office (one wall rack), a medium office building (core and server racks plus a floor closet, with A/B power) and a large data centre row (leaf-spine network, redundant internet, 231 cables). Each is fully cabled and passes the connection check; loading one keeps your units, colors and cable types, and Undo brings your layout back
 - Works from the keyboard: the rack and cable lists take the arrow keys (<kbd>Alt</kbd> + arrows reorder racks), menus open on the first item, and the panels keep your place while you edit; toggles and lists are announced to screen readers
 - Autosaves in the browser (and follows changes made in another tab); save / open layouts as JSON. Opened files are checked, so a layout from someone else can't inject anything into the page
 
@@ -34,6 +35,7 @@ The 3D view loads three.js from a CDN, so it needs an internet connection.
 | File | What it does |
 |---|---|
 | `js/model.js` | Device catalogue, document, rack geometry, ports, power analysis, labels |
+| `js/examples.js` | The small, medium and large example layouts, built with a tiny cabling kit |
 | `js/routing.js` | Cable positions, curves, diagram routing, lengths, the Tidy optimiser |
 | `js/draw2d.js` | 2D elevation (front / rear) used by the live view and the exports |
 | `js/view3d.js` | 3D view |

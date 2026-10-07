@@ -155,42 +155,6 @@ function makeDev(type, o = {}) {
   for (const k of DEV_FIELDS) if (o[k] !== undefined && o[k] !== '') d[k] = o[k];
   return d;
 }
-function demoDoc() {
-  const d = blankDoc();
-  const put = (r, type, u, o = {}) => { const v = makeDev(type, { u, ...o }); r.devices.push(v); return v; };
-  const a = makeRack({ name: 'Rack A', units: 42 });
-  const fo = put(a, 'fiber', 42);
-  const p1 = put(a, 'patch', 41, { name: 'Patch panel 1' });
-  put(a, 'manager', 40);
-  const s1 = put(a, 'switch', 39, { name: 'Core switch', ports: 48, hostname: 'core-sw-01', ip: '10.0.0.2' });
-  const p2 = put(a, 'patch', 38, { name: 'Patch panel 2' });
-  put(a, 'manager', 37);
-  const s2 = put(a, 'switch', 36, { name: 'Access switch', hostname: 'acc-sw-01', ip: '10.0.0.3' });
-  const fw = put(a, 'firewall', 34, { hostname: 'fw-01', ip: '10.0.0.1' });
-  const sv1 = put(a, 'server', 20, { name: 'Server 1', hostname: 'srv-01' });
-  const sv2 = put(a, 'server', 18, { name: 'Server 2', hostname: 'srv-02' });
-  const ups = put(a, 'ups', 2, { outletType: 'c19', mains: true });
-  const pdu = put(a, 'pdu', 1, { mount: 'rear', name: 'PDU B', feed: 'B' });
-  const vp = put(a, 'vpdu', 0, { name: 'PDU A', side: 'right', offset: 120, length: 1500, feed: 'A' });
-  const b = makeRack({ name: 'Rack B', units: 24, depth: 800 });
-  const p3 = put(b, 'patch', 24, { name: 'Coax panel', portType: 'f', ports: 12 });
-  put(b, 'manager', 23);
-  const s3 = put(b, 'switch', 22, { name: 'Edge switch' });
-  const m = put(b, 'ont', 20, { name: 'Cable modem', uplinkType: 'f-coax' });
-  const pb = put(b, 'pdu', 21, { mount: 'rear', name: 'PDU', mains: true });
-  put(b, 'shelf', 15, { h: 2 });
-  d.racks.push(a, b);
-  const cab = (type, x, y, pa, pb_) => ({ id: uid(), type, a: x.id, b: y.id, pa, pb: pb_, label: '' });
-  d.cables.push(
-    cab('utp', p1, s1, 'p1', 'p1'), cab('utp', p1, s1, 'p2', 'p2'), cab('utp', p2, s2, 'p1', 'p1'),
-    cab('fiber', fo, s1, 'p1', 'u1'), cab('fiber', s1, s3, 'u2', 'u1'), cab('coax', p3, m, 'p1', 'u1'), cab('utp', m, fw, 'p1', 'p1'),
-    cab('c19', ups, vp, 'o1', 'i1'), cab('c19', ups, pdu, 'o2', 'i1'),
-    cab('c13', vp, s1, 'o1', 'i1'), cab('c13', vp, s2, 'o2', 'i1'), cab('c13', vp, fw, 'o3', 'i1'),
-    cab('c13', vp, sv1, 'o5', 'i1'), cab('c13', pdu, sv1, 'o1', 'i2'),
-    cab('c13', vp, sv2, 'o6', 'i1'), cab('c13', pdu, sv2, 'o2', 'i2'),
-    cab('c13', pb, s3, 'o1', 'i1'), cab('c13', pb, m, 'o2', 'i1'));
-  return d;
-}
 function validDoc(d) { return d && Array.isArray(d.racks) && Array.isArray(d.cables); }
 function normalize(d) {
   d.settings = { unit: 'cm', gap: 300, route: 'ortho', via: 'top', catColors: {}, labelPattern: '{rack}-U{u}-{port}',
@@ -364,10 +328,10 @@ function save() {
 }
 
 let doc = load();
-const firstVisit = !doc;   // nothing saved in this browser yet: start with the example layout
-if (!doc) doc = demoDoc();
+const firstVisit = !doc;   // nothing saved in this browser yet: examples.js fills in an example layout
+if (!doc) doc = blankDoc();
 const ui = {
-  view: '2d', face: 'front', mode: 'select', cableType: 'utp', sel: null, multi: new Set(), lastRack: null,
+  view: '2d', face: 'front', mode: 'select', cableType: 'utp', sel: null, multi: new Set(), lastRack: null, example: false,
   pending: null, pendingPort: '', drag: null, pan: null, measure: null, marquee: null, hover: null, hoverPort: null,
   rewire: null, clip: null, cam: { x: 0, y: 0, k: 0.3 }, fitK: 0, userMoved: false,
   get unit() { return doc.settings.unit; },
@@ -376,7 +340,7 @@ const ui = {
 /* undo entries: the document plus what was selected, so undo puts you back where you were */
 const undoStack = [], redoStack = [];
 const selNow = () => ({ sel: ui.sel && { ...ui.sel }, multi: [...ui.multi] });
-const snapshot = (s = selNow()) => ({ doc: JSON.stringify(doc), ...s });
+const snapshot = (s = selNow()) => ({ doc: JSON.stringify(doc), example: ui.example, ...s });
 function pushUndo() {
   // the selection as last drawn: callers often pick the new selection just before mutating
   undoStack.push(snapshot(ui.shownSel || selNow()));
@@ -396,6 +360,7 @@ function restore(e) {
   doc = JSON.parse(e.doc);
   Object.assign(doc.settings, keep);
   ui.sel = e.sel; ui.multi = new Set(e.multi);   // renderAll drops whatever no longer exists
+  if (e.example !== undefined && e.example !== ui.example) setExample(e.example);   // the "this is an example" note goes with its layout
   save();
   renderAll();
 }
@@ -766,7 +731,7 @@ function powerModel() {
   for (const { dev } of Object.values(devs)) {
     const n = nInlets(dev), fs = feeds[dev.id] || [];
     if (!n) continue;
-    if (!fs.length) { if (watts(dev) > 0) unpowered.push(dev.id); continue; }
+    if (!fs.length) { if (watts(dev) > 0 && !dev.mains) unpowered.push(dev.id); continue; }
     if (n >= 2 && fs.length >= 2) {
       const keys = new Set(fs.map(f => feedOf(f.src)));
       if (keys.size === 1) warnings.push({ level: 'warn', id: dev.id, text: `${dev.name}: every power supply is on ${[...keys][0]}` });

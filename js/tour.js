@@ -40,7 +40,7 @@ const TOUR = [
   { at: () => $('.search'), side: 'bottom', title: 'Search',
     text: 'Find devices, hostnames, IP addresses and cable labels, and jump straight to them. Press <kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd>.' },
   { at: () => [$('#fileBtn'), $('#fileMenu')], side: 'left', enter: () => showMenu(true), leave: () => showMenu(false), title: 'Export, save and open',
-    text: 'Export drawings to scale as PDF or SVG with layers for CAD, or as PNG. Export the bill of materials as CSV, and save or open layouts as files. Your work also saves automatically in this browser.' },
+    text: 'Export drawings to scale as PDF or SVG with layers for CAD, or as PNG. Export the bill of materials as CSV, and save or open layouts as files. The same menu has a small, a medium and a large example to start from. Your work also saves automatically in this browser.' },
   { at: () => $('#helpBtn'), side: 'bottom', title: 'Help and this tour',
     text: 'Shortcuts and tips are here, with a button to take this tour again whenever you like. Happy planning!', next: 'Done' },
 ];

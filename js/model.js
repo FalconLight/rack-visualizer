@@ -116,6 +116,30 @@ const fmtKg = kg => (kg >= 100 ? Math.round(kg) : +kg.toFixed(1)) + ' kg';
 const btu = w => Math.round(w * 3.412);
 const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const clip = (t, n) => t.length > n ? t.slice(0, Math.max(1, n - 1)) + '…' : t;
+/* a toggle button's state, for the eye (.on) and for screen readers (aria-pressed) */
+const setOn = (b, on) => { b.classList.toggle('on', !!on); b.setAttribute('aria-pressed', String(!!on)); };
+const markOn = (sel, attr, v) => { for (const b of document.querySelectorAll(sel)) setOn(b, b.dataset[attr] === v); };
+/* slide an open menu sideways so it stays inside a box (the window, or the pane that clips it) */
+function keepInside(menu, box = { left: 0, right: document.documentElement.clientWidth }) {
+  menu.style.translate = '';
+  const r = menu.getBoundingClientRect(), m = 8;
+  const dx = r.left < box.left + m ? box.left + m - r.left : r.right > box.right - m ? Math.max(box.left + m - r.left, box.right - m - r.right) : 0;
+  if (dx) menu.style.translate = `${Math.round(dx)}px 0`;
+}
+/* the menu button pattern: opened from the keyboard, the first item takes the focus; the arrows move
+   through the items, Esc closes the menu and goes back to its button. show(on) opens or closes it. */
+function menuKeys(btn, menu, show) {
+  const first = () => menu.querySelector('[role="menuitem"]')?.focus();
+  btn.addEventListener('click', e => { if (e.detail === 0 && !menu.hidden) first(); });   // Enter or Space
+  btn.addEventListener('keydown', e => { if (e.key === 'ArrowDown' && menu.hidden) { e.preventDefault(); e.stopPropagation(); show(true); first(); } });
+  menu.addEventListener('keydown', e => {
+    const items = [...menu.querySelectorAll('[role="menuitem"]')], i = items.indexOf(document.activeElement);
+    const to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: items.length - 1 }[e.key];
+    if (to !== undefined) { e.preventDefault(); e.stopPropagation(); items[(to + items.length) % items.length].focus(); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); show(false); btn.focus(); }
+    else if (e.key === 'Tab') show(false);
+  });
+}
 
 /* ---------- document ---------- */
 function blankDoc() { return normalize({ racks: [], cables: [] }); }
@@ -339,7 +363,9 @@ function save() {
   }
 }
 
-let doc = load() || demoDoc();
+let doc = load();
+const firstVisit = !doc;   // nothing saved in this browser yet: start with the example layout
+if (!doc) doc = demoDoc();
 const ui = {
   view: '2d', face: 'front', mode: 'select', cableType: 'utp', sel: null, multi: new Set(), lastRack: null,
   pending: null, pendingPort: '', drag: null, pan: null, measure: null, marquee: null, hover: null, hoverPort: null,

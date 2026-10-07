@@ -6,7 +6,7 @@
 <title>Rack Visualizer</title>
 <meta name="description" content="Plan the space networking equipment takes up in racks: rack units, ports, power, cables, 2D and 3D views.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232563eb' stroke-width='2' stroke-linecap='round'%3E%3Crect x='5' y='3' width='14' height='18' rx='2'/%3E%3Cpath d='M8 8h8M8 12h8M8 16h8'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css?v=38">
+<link rel="stylesheet" href="style.css?v=39">
 </head>
 <body>
 
@@ -46,49 +46,38 @@
 </svg>
 
 <header class="bar">
-  <div class="brand"><svg class="ic logo"><use href="#i-rack"/></svg><span>Rack Visualizer</span></div>
+  <div class="brand"><svg class="ic logo"><use href="#i-rack"/></svg><span class="brand-name">Rack Visualizer</span></div>
 
   <div class="seg" id="viewSeg" role="group" aria-label="View">
-    <button data-view="2d" class="on" title="Elevation">2D</button><button data-view="3d" title="3D view">3D</button><button data-pane="net" title="Network diagram of the connections">Network</button>
+    <button data-view="2d" class="on" aria-pressed="true" title="Rack elevation, front or rear">2D</button><button data-view="3d" aria-pressed="false" title="3D view">3D</button><button data-pane="net" aria-pressed="false" title="Diagram of the connections: data and power">Diagram</button>
   </div>
-  <button class="ib" id="splitBtn" aria-pressed="false" title="Racks and network diagram side by side (N)" aria-label="Side by side"><svg class="ic"><use href="#i-split"/></svg></button>
-  <div class="seg" id="faceSeg" role="group" aria-label="Face" title="Which side of the racks you look at (R)">
-    <button data-face="front" class="on">Front</button><button data-face="rear">Rear</button>
-  </div>
+  <button class="ib" id="splitBtn" aria-pressed="false" title="Racks and diagram side by side (N)" aria-label="Racks and diagram side by side"><svg class="ic"><use href="#i-split"/></svg></button>
 
   <span class="divider"></span>
 
   <div class="seg" id="modeSeg" role="group" aria-label="Tool">
-    <button data-mode="select" class="on" title="Select and move (V)"><svg class="ic"><use href="#i-cursor"/></svg><span class="lbl">Select</span></button><button data-mode="connect" title="Draw cables, port to port (C)"><svg class="ic"><use href="#i-cable"/></svg><span class="lbl">Cable</span></button><button data-mode="measure" title="Measure distances (M)"><svg class="ic"><use href="#i-ruler"/></svg><span class="lbl">Measure</span></button>
+    <button data-mode="select" class="on" aria-pressed="true" title="Select and move (V)" aria-label="Select"><svg class="ic"><use href="#i-cursor"/></svg><span class="lbl" aria-hidden="true">Select</span></button><button data-mode="connect" aria-pressed="false" title="Draw cables, port to port (C)" aria-label="Cable"><svg class="ic"><use href="#i-cable"/></svg><span class="lbl" aria-hidden="true">Cable</span></button><button data-mode="measure" aria-pressed="false" title="Measure distances (M)" aria-label="Measure"><svg class="ic"><use href="#i-ruler"/></svg><span class="lbl" aria-hidden="true">Measure</span></button>
   </div>
-  <label class="ctx" id="cableTypeWrap" title="Preferred cable type. Power ports get a power cable automatically" hidden>
-    <select id="cableType" aria-label="Cable type"></select>
-  </label>
   <button class="ib" id="checkBtn" aria-pressed="false" title="Check connections (K): every device's power and data lights, problems outlined" aria-label="Check connections"><svg class="ic"><use href="#i-check"/></svg><i class="dot" id="checkDot" hidden></i></button>
-  <div class="seg" id="routeSeg" role="group" aria-label="Cable drawing" title="How cables are drawn in 2D">
-    <button data-route="curve">Curved</button><button data-route="ortho">Diagram</button>
-  </div>
-  <button class="ib" id="tidyBtn" title="Tidy: reorder cable lanes to remove crossings" aria-label="Tidy cables" hidden><svg class="ic"><use href="#i-wand"/></svg></button>
 
   <div class="spacer"></div>
 
   <div class="search">
-    <svg class="ic"><use href="#i-search"/></svg>
-    <input id="searchIn" type="search" placeholder="Search devices, IPs, cables" aria-label="Search" autocomplete="off" spellcheck="false">
-    <kbd>/</kbd>
-    <div id="searchRes" class="menu" hidden></div>
+    <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
+    <input id="searchIn" type="search" placeholder="Search devices, IPs, cables" aria-label="Search devices, IPs and cables" autocomplete="off" spellcheck="false"
+      role="combobox" aria-expanded="false" aria-controls="searchRes" aria-autocomplete="list">
+    <kbd aria-hidden="true">/</kbd>
+    <div id="searchRes" class="menu" role="listbox" aria-label="Search results" hidden></div>
   </div>
-  <label class="ctx" title="Units for lengths">
-    <span class="lbl muted">Units</span>
-    <select id="unitSel" aria-label="Units"><option value="cm">cm</option><option value="in">in</option><option value="mm">mm</option></select>
-  </label>
   <span class="divider"></span>
-  <button class="ib" id="undoBtn" title="Undo (Ctrl+Z)" aria-label="Undo"><svg class="ic"><use href="#i-undo"/></svg></button>
-  <button class="ib" id="redoBtn" title="Redo (Ctrl+Y)" aria-label="Redo"><svg class="ic"><use href="#i-redo"/></svg></button>
+  <div class="ib-group" role="group" aria-label="Undo and redo">
+    <button class="ib" id="undoBtn" title="Undo (Ctrl+Z)" aria-label="Undo"><svg class="ic"><use href="#i-undo"/></svg></button>
+    <button class="ib" id="redoBtn" title="Redo (Ctrl+Y)" aria-label="Redo"><svg class="ic"><use href="#i-redo"/></svg></button>
+  </div>
   <button class="ib" id="themeBtn" aria-label="Theme"><svg class="ic"><use href="#i-auto"/></svg></button>
   <button class="ib" id="helpBtn" title="Shortcuts, tips and the tour (?)" aria-label="Help"><svg class="ic"><use href="#i-help"/></svg></button>
   <div class="menu-wrap">
-    <button id="fileBtn" aria-haspopup="menu" aria-expanded="false" title="Export, import or start over"><svg class="ic"><use href="#i-menu"/></svg><span class="lbl">File</span></button>
+    <button id="fileBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="fileMenu" aria-label="File" title="Export, import or start over"><svg class="ic"><use href="#i-menu"/></svg><span class="lbl">File</span></button>
     <div class="menu" id="fileMenu" role="menu" hidden>
       <button role="menuitem" id="drawingBtn" data-closes><svg class="ic"><use href="#i-image"/></svg>Export drawing (PDF, SVG, PNG)…</button>
       <button role="menuitem" id="csvBtn" data-closes><svg class="ic"><use href="#i-table"/></svg>Export bill of materials (.csv)</button>
@@ -105,12 +94,21 @@
 <main>
   <aside class="left" id="leftPanel">
     <button class="panel-bar" data-panel="left" aria-controls="leftPanel" aria-expanded="true"><span>Racks &amp; equipment</span><svg class="ic"><use href="#i-chev"/></svg></button>
+    <section class="example-note" id="exampleNote" aria-labelledby="exampleTitle" hidden>
+      <h2 id="exampleTitle">This is an example layout</h2>
+      <p>Explore it and try things out. When you are ready, start your own; Undo brings the example back.</p>
+      <div class="row">
+        <button class="primary" id="exampleClear">Start an empty layout</button>
+        <button id="exampleKeep">Keep the example</button>
+      </div>
+    </section>
     <section>
       <div class="sec-head">
-        <h3>Racks</h3>
+        <h3 id="racksTitle">Racks</h3>
         <button class="link" id="newRackBtn" aria-expanded="false" aria-controls="addRackForm">+ New rack</button>
       </div>
-      <div id="rackList" class="list"></div>
+      <div id="rackList" class="list" role="listbox" aria-labelledby="racksTitle" aria-describedby="rackListHelp"></div>
+      <p class="sr-only" id="rackListHelp">Arrow keys move between racks. Alt with the up or down arrow changes the order.</p>
       <form id="addRackForm" class="grid2 card" hidden>
         <label class="full">Preset
           <select name="preset" id="presetSel"></select>
@@ -138,7 +136,24 @@
   <div id="stage" data-mode="select">
     <svg id="svg" class="scene" xmlns="http://www.w3.org/2000/svg" aria-label="Rack elevation"></svg>
     <div id="three" hidden></div>
-    <div id="legend" class="float" hidden></div>
+    <div class="stage-top">
+      <div class="float view-bar" id="viewBar">
+        <div class="seg" id="faceSeg" role="group" aria-label="Side of the racks">
+          <button data-face="front" class="on" aria-pressed="true" title="Front of the racks (R switches)">Front</button><button data-face="rear" aria-pressed="false" title="Rear of the racks (R switches)">Rear</button>
+        </div>
+        <span class="divider"></span>
+        <div class="seg" id="routeSeg" role="group" aria-label="How cables are drawn">
+          <button data-route="curve" aria-pressed="false" title="Cables as curves, port to port">Curved</button><button data-route="ortho" aria-pressed="false" title="Cables arranged through cable managers, side channels and trays">Arranged</button>
+        </div>
+        <button class="ib" id="tidyBtn" title="Tidy: reorder the cable lanes to remove crossings" aria-label="Tidy the cables" hidden><svg class="ic"><use href="#i-wand"/></svg></button>
+        <div class="ctx" id="cableTypeWrap" hidden>
+          <span class="divider"></span>
+          <label class="ctx" title="Cable type for new cables. Power ports get a power cable automatically"><span class="lbl muted" aria-hidden="true">New cable</span>
+            <select id="cableType" aria-label="Cable type for new cables"></select></label>
+        </div>
+      </div>
+      <div id="legend" class="float" hidden></div>
+    </div>
     <div id="empty" class="empty-state" hidden>
       <svg class="ic big"><use href="#i-rack"/></svg>
       <h2>No racks yet</h2>
@@ -147,7 +162,7 @@
     </div>
     <div class="zoom float" id="zoomCtl">
       <button class="ib" id="zoomOut" title="Zoom out (−)" aria-label="Zoom out"><svg class="ic"><use href="#i-minus"/></svg></button>
-      <span id="zoomLbl" title="Zoom relative to fit">100%</span>
+      <span id="zoomLbl" class="zoom-lbl" title="Zoom relative to fit">100%</span>
       <button class="ib" id="zoomIn" title="Zoom in (+)" aria-label="Zoom in"><svg class="ic"><use href="#i-plus"/></svg></button>
       <span class="divider"></span>
       <button class="ib" id="fitBtn" title="Fit everything (F)" aria-label="Fit view"><svg class="ic"><use href="#i-fit"/></svg></button>
@@ -156,11 +171,11 @@
   </div>
   <div id="splitter" role="separator" aria-orientation="vertical" aria-label="Resize the two views" tabindex="0" title="Drag to resize · double-click for half and half" hidden></div>
   <div id="netPane" hidden>
-    <svg id="netSvg" class="netscene" xmlns="http://www.w3.org/2000/svg" aria-label="Network diagram"></svg>
+    <svg id="netSvg" class="netscene" xmlns="http://www.w3.org/2000/svg" aria-label="Diagram of the connections"></svg>
     <div class="float net-bar">
-      <span class="net-title">Network</span>
-      <div class="seg" id="netLayerSeg" role="group" aria-label="Diagram">
-        <button data-layer="data" class="on" title="Data cables between devices">Data</button><button data-layer="power" title="The power chain, from the building feed down">Power</button>
+      <span class="net-title">Diagram</span>
+      <div class="seg" id="netLayerSeg" role="group" aria-label="Which connections">
+        <button data-layer="data" class="on" aria-pressed="true" title="Data cables between devices">Data</button><button data-layer="power" aria-pressed="false" title="The power chain, from the building feed down">Power</button>
       </div>
       <span class="divider"></span>
       <div class="menu-wrap" id="netArrangeWrap">
@@ -170,15 +185,16 @@
       <button class="ib" id="netGridBtn" aria-pressed="false" title="Show the grid" aria-label="Grid"><svg class="ic"><use href="#i-grid"/></svg></button>
       <button class="ib" id="netSnapBtn" aria-pressed="false" title="Snap boxes to the grid" aria-label="Snap to the grid"><svg class="ic"><use href="#i-magnet"/></svg></button>
       <div class="seg" id="netLinkSeg" role="group" aria-label="Links">
-        <button data-links="curved" title="Round links" aria-label="Round links"><svg class="ic"><use href="#i-curve"/></svg></button><button data-links="angled" title="Angled links" aria-label="Angled links"><svg class="ic"><use href="#i-angle"/></svg></button>
+        <button data-links="curved" aria-pressed="false" title="Round links" aria-label="Round links"><svg class="ic"><use href="#i-curve"/></svg></button><button data-links="angled" aria-pressed="false" title="Angled links" aria-label="Angled links"><svg class="ic"><use href="#i-angle"/></svg></button>
       </div>
     </div>
     <div id="netLegend" class="float" hidden></div>
     <div class="zoom float" id="netZoom">
-      <button class="ib" id="netZoomOut" title="Zoom out" aria-label="Zoom out"><svg class="ic"><use href="#i-minus"/></svg></button>
-      <button class="ib" id="netZoomIn" title="Zoom in" aria-label="Zoom in"><svg class="ic"><use href="#i-plus"/></svg></button>
+      <button class="ib" id="netZoomOut" title="Zoom out (−)" aria-label="Zoom out"><svg class="ic"><use href="#i-minus"/></svg></button>
+      <span id="netZoomLbl" class="zoom-lbl" title="Zoom relative to the whole diagram">100%</span>
+      <button class="ib" id="netZoomIn" title="Zoom in (+)" aria-label="Zoom in"><svg class="ic"><use href="#i-plus"/></svg></button>
       <span class="divider"></span>
-      <button class="ib" id="netFit" title="Fit the diagram" aria-label="Fit the diagram"><svg class="ic"><use href="#i-fit"/></svg></button>
+      <button class="ib" id="netFit" title="Fit the whole diagram (F)" aria-label="Fit the whole diagram"><svg class="ic"><use href="#i-fit"/></svg></button>
     </div>
     <div id="netEmpty" class="empty-state" hidden><h2>Nothing to show yet</h2><p></p></div>
   </div>
@@ -188,12 +204,12 @@
   <aside class="right" id="rightPanel">
     <button class="panel-bar" data-panel="right" aria-controls="rightPanel" aria-expanded="true"><span>Properties &amp; panels</span><svg class="ic"><use href="#i-chev"/></svg></button>
     <section class="props-sec">
-      <div class="sec-head"><h3 id="propsTitle">Properties</h3></div>
+      <div class="sec-head"><h3 id="propsTitle" tabindex="-1">Properties</h3></div>
       <div id="props"></div>
     </section>
     <details class="sec" data-key="cables" open>
-      <summary><h3>Cables</h3><span class="count" id="cableCount"></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
-      <div class="sec-body"><div id="cableList" class="list"></div></div>
+      <summary><h3 id="cablesTitle">Cables</h3><span class="count" id="cableCount"></span><svg class="ic chev" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+      <div class="sec-body"><div id="cableList" class="list" role="listbox" aria-labelledby="cablesTitle"></div><div id="cableSum" class="list"></div></div>
     </details>
     <details class="sec" data-key="power">
       <summary><h3>Power &amp; weight</h3><span class="count warn-count" id="powerCount"></span><svg class="ic chev"><use href="#i-chev"/></svg></summary>
@@ -230,13 +246,13 @@
   </div>
   <dl class="keys">
     <dt><kbd>V</kbd></dt><dd>Select and move equipment</dd>
-    <dt><kbd>C</kbd></dt><dd>Cable tool: click a port, then a port on another device. Power outlets connect to power inlets.</dd>
+    <dt><kbd>C</kbd></dt><dd>Cable tool: click a port, then a port on another device. Clicking a device instead of a port uses its first free port that fits. Power outlets connect to power inlets.</dd>
     <dt><kbd>M</kbd></dt><dd>Measure: drag anywhere</dd>
     <dt><kbd>K</kbd></dt><dd>Check connections: problems are outlined and listed under Connections. The small lights on each device show power (top) and data (bottom): green connected, amber partly, red not connected</dd>
     <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Hide or show the left and right panels (or the tabs on their edges)</dd>
     <dt>Double-click · <kbd>Enter</kbd></dt><dd>Open the properties of a device, rack or cable, in any view</dd>
-    <dt>Network diagram</dt><dd>Drag a box to move it (Shift-click several to move them together); Arrange picks a standard layout. Grid, snap and round or angled links are in its bar</dd>
-    <dt><kbd>N</kbd></dt><dd>Racks and the network diagram side by side; selecting in one selects in the other</dd>
+    <dt>Diagram</dt><dd>Drag a box to move it (Shift-click several to move them together); Arrange picks a standard layout. Grid, snap and round or angled links are in its bar; <kbd>F</kbd> or the fit button shows the whole diagram</dd>
+    <dt><kbd>N</kbd></dt><dd>Racks and the diagram side by side; selecting in one selects in the other</dd>
     <dt><kbd>R</kbd></dt><dd>Switch between the front and rear view (power inlets are at the rear)</dd>
     <dt>Drag a plug</dt><dd>Move a cable end to another port (Select tool)</dd>
     <dt><kbd>Shift</kbd> click / drag</dt><dd>Select several devices, or drag a box on empty space</dd>
@@ -245,13 +261,13 @@
     <dt><kbd>Del</kbd></dt><dd>Delete the selection</dd>
     <dt><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd></dt><dd>Search devices, hostnames, IPs and cable labels</dd>
     <dt><kbd>Esc</kbd></dt><dd>Cancel / clear selection</dd>
-    <dt><kbd>F</kbd></dt><dd>Fit everything in view</dd>
+    <dt><kbd>F</kbd></dt><dd>Fit everything in view (both views when side by side)</dd>
     <dt><kbd>+</kbd> <kbd>−</kbd></dt><dd>Zoom in / out</dd>
     <dt><kbd>Ctrl</kbd> <kbd>Z</kbd> / <kbd>Y</kbd></dt><dd>Undo / redo</dd>
     <dt>Drag empty space</dt><dd>Pan (or right / middle mouse button)</dd>
     <dt>Scroll · pinch</dt><dd>Zoom</dd>
   </dl>
-  <p class="hint">In Diagram mode cables run through the nearest cable manager and the rack's side channel; the wand button reorders lanes to remove crossings. Your layout saves automatically in this browser. Use File → Save layout to keep a copy or move it to another device.</p>
+  <p class="hint">With <b>Arranged</b> cables (in the bar over the racks) cables run through the nearest cable manager and the rack's side channel; the wand button reorders the lanes to remove crossings. Units (cm, in or mm) are in Properties when nothing is selected. Your layout saves automatically in this browser. Use File → Save layout to keep a copy or move it to another device.</p>
   <div class="row end"><button class="primary" data-tour-start>Take the tour</button></div>
 </dialog>
 
@@ -287,8 +303,10 @@
         <label class="check"><input type="checkbox" name="cables" checked> Cables</label>
         <label class="check"><input type="checkbox" name="labels"> Cable labels</label>
         <label class="check"><input type="checkbox" name="titled" checked> Title and date</label>
+        <label class="check"><input type="checkbox" name="netData"> Data diagram</label>
+        <label class="check"><input type="checkbox" name="netPower"> Power diagram</label>
       </fieldset>
-      <p class="hint">PDF and SVG are drawn to scale in millimetres, and keep each part on its own layer (racks, rack units, devices, data ports, power ports, one layer per cable type, labels), so CAD programs such as AutoCAD (PDFIMPORT), Illustrator or Inkscape can switch them on and off.</p>
+      <p class="hint">PDF and SVG are drawn to scale in millimetres, and keep each part on its own layer (racks, rack units, devices, data ports, power ports, one layer per cable type, labels), so CAD programs such as AutoCAD (PDFIMPORT), Illustrator or Inkscape can switch them on and off. Diagrams go below the racks as they are arranged in the Diagram view, not to scale, each on its own layer.</p>
     </div>
     <div class="row end dlg-foot">
       <button type="button" data-close>Cancel</button>
@@ -300,13 +318,13 @@
 <datalist id="portCounts"><option value="4"><option value="8"><option value="12"><option value="16"><option value="24"><option value="48"></datalist>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
-<script src="js/model.js?v=38"></script>
-<script src="js/routing.js?v=38"></script>
-<script src="js/draw2d.js?v=38"></script>
-<script src="js/view3d.js?v=38"></script>
-<script src="js/export.js?v=38"></script>
-<script src="js/netdiagram.js?v=38"></script>
-<script src="js/ui.js?v=38"></script>
-<script src="js/tour.js?v=38"></script>
+<script src="js/model.js?v=39"></script>
+<script src="js/routing.js?v=39"></script>
+<script src="js/draw2d.js?v=39"></script>
+<script src="js/view3d.js?v=39"></script>
+<script src="js/export.js?v=39"></script>
+<script src="js/netdiagram.js?v=39"></script>
+<script src="js/ui.js?v=39"></script>
+<script src="js/tour.js?v=39"></script>
 </body>
 </html>

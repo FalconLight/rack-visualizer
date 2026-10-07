@@ -5,17 +5,18 @@ A minimal tool to plan the space networking equipment takes up in racks.
 - **Racks** with custom height (U), width, depth, weight limit and cable channel side
 - **Equipment** measured in rack units: switches, routers, firewalls, patch panels, fiber enclosures, ODFs, servers, storage, NVRs, KVMs, UPS, PDUs, vertical 0U PDUs, transfer switches and more; half-width devices; your own templates
 - **Ports** with connector types (RJ45, LC, SC, MPO, F, SFP…), uplinks, power inlets and outlets
-- **Cables** port to port, data and power (C13–C14, C19–C20, Schuko, NEMA), custom types and colors, compatibility warnings, auto labels and stock cord lengths; repeat a cable over the next ports for patch runs
-- **Diagram routing** through cable managers, side channels and overhead or underfloor trays, with a one-click “Tidy” that removes crossings
+- **Cables** port to port, data and power (C13–C14, C19–C20, Schuko, NEMA), custom types and colors, compatibility warnings, auto labels and stock cord lengths; repeat a cable over the next ports for patch runs. Clicking a device instead of a port uses its first free port that fits, so cables can be drawn without zooming in
+- **Arranged cables** (or curved ones) through cable managers, side channels and overhead or underfloor trays, with a one-click “Tidy” that removes crossings; front / rear and the cable style are in a bar over the racks
 - **Power budget**: load per PDU / UPS (normal and if a feed fails), A/B feed check, watts and BTU/h per rack, weight per rack
 - **Connection check**: small power and data lights on every device, and a check mode (<kbd>K</kbd>) that outlines what isn't connected and lists it. Power is followed along the chain from the PDUs / UPSs marked “Has building power”; devices can be marked as spare
 - **Views**: front and rear elevation, and 3D
-- **Network diagram** of the connections, laid out top-down (incoming lines, firewall, switches, endpoints), with a Data and a Power layer (the power chain from the building feed down). Show it next to the racks (<kbd>N</kbd>) with a draggable divider; selecting in one view selects and shows it in the other. Drag boxes to arrange it yourself (with an optional grid and snapping), or pick a standard layout: top-down tree, left to right, star or by rack; round or angled links. Angled links cascade into their own lanes, ordered to cross as little as possible, and the arranged layouts leave room for them
-- **Exports**: PDF and SVG with layers (to scale, for CAD), PNG, and a CSV bill of materials
+- **Diagram** of the connections, laid out top-down (incoming lines, firewall, switches, endpoints), with a Data and a Power layer (the power chain from the building feed down). Show it next to the racks (<kbd>N</kbd>) with a draggable divider; selecting in one view selects and shows it in the other. Drag boxes to arrange it yourself (with an optional grid and snapping), or pick a standard layout: top-down tree, left to right, star or by rack; round or angled links. Angled links cascade into their own lanes, ordered to cross as little as possible, and the arranged layouts leave room for them. <kbd>F</kbd> or the fit button shows the whole diagram (both views when side by side)
+- **Exports**: PDF and SVG with layers (to scale, for CAD), PNG, and a CSV bill of materials; the data and power diagrams can be added below the racks, each on its own layer
 - Search, port map, port numbers when zoomed in, multi-select, copy / paste, undo / redo, unit converter and measure tool
 - Reorder racks by dragging them in the rack list; duplicating a rack copies the cables inside it
-- Side panels that fold away for more room (the tabs on the drawing's edges, or <kbd>[</kbd> and <kbd>]</kbd>); double-click any device, rack or cable (in 2D, 3D or the network diagram) to open its properties
-- A guided tour of the main functions on the first visit; skip it any time, and take it again from Help (?)
+- Side panels that fold away for more room (the tabs on the drawing's edges, or <kbd>[</kbd> and <kbd>]</kbd>); double-click any device, rack or cable (in 2D, 3D or the diagram) to open its properties
+- A guided tour of the main functions on the first visit; skip it any time, and take it again from Help (?). The first visit opens an example layout, with a note to start an empty one
+- Works from the keyboard: the rack and cable lists take the arrow keys (<kbd>Alt</kbd> + arrows reorder racks), menus open on the first item, and the panels keep your place while you edit; toggles and lists are announced to screen readers
 - Autosaves in the browser (and follows changes made in another tab); save / open layouts as JSON. Opened files are checked, so a layout from someone else can't inject anything into the page
 
 ## Run locally

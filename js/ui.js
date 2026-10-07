@@ -5,12 +5,49 @@
    toolbar, keyboard shortcuts and the render loop.
    ===================================================================== */
 
-const propsEl = $('#props'), rackListEl = $('#rackList'), cableListEl = $('#cableList'), powerEl = $('#powerPanel');
+const propsEl = $('#props'), rackListEl = $('#rackList'), cableListEl = $('#cableList'), cableSumEl = $('#cableSum'), powerEl = $('#powerPanel');
 
 let toastTimer;
 function toast(msg) {
   toastEl.textContent = msg; toastEl.hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (toastEl.hidden = true), 2800);
+}
+
+/* ---------- updating panels in place ----------
+   The panels are rebuilt from HTML after every change. Replacing them with innerHTML would also replace
+   the field you are tabbing or clicking to (focus jumps to the page, and the click is lost). patchHTML
+   updates the elements that are already there and only swaps the ones that really changed. */
+const patchTpl = document.createElement('template');
+function patchHTML(el, html) {
+  patchTpl.innerHTML = html;
+  patchChildren(el, patchTpl.content);
+}
+const sameNode = (a, b) => a.nodeType === b.nodeType && a.nodeName === b.nodeName
+  && (a.nodeType !== 1 || (a.getAttribute('data-id') === b.getAttribute('data-id') && a.getAttribute('type') === b.getAttribute('type')));
+function patchChildren(cur, next) {
+  const want = [...next.childNodes];
+  want.forEach((n, i) => {
+    const o = cur.childNodes[i];
+    if (!o) cur.appendChild(n);
+    else if (!sameNode(o, n)) cur.replaceChild(n, o);
+    else if (o.nodeType === 1) patchEl(o, n);
+    else if (o.nodeValue !== n.nodeValue) o.nodeValue = n.nodeValue;
+  });
+  while (cur.childNodes.length > want.length) cur.lastChild.remove();
+}
+function patchEl(o, n) {
+  for (const { name } of [...o.attributes])
+    if (!n.hasAttribute(name) && !(name === 'open' && o.tagName === 'DETAILS')) o.removeAttribute(name);   // a section you opened stays open
+  for (const { name, value } of n.attributes) if (o.getAttribute(name) !== value) o.setAttribute(name, value);
+  const tag = o.tagName;
+  if (tag === 'TEXTAREA') { if (o.value !== n.textContent) o.value = n.textContent; return; }
+  const pick = tag === 'SELECT' ? (n.querySelector('option[selected]') || n.querySelector('option'))?.value : null;
+  patchChildren(o, n);
+  if (tag === 'SELECT') { if (pick != null && o.value !== pick) o.value = pick; }
+  else if (tag === 'INPUT') {
+    if (o.type === 'checkbox' || o.type === 'radio') o.checked = n.hasAttribute('checked');
+    else { const v = n.getAttribute('value') ?? ''; if (o.value !== v) o.value = v; }
+  }
 }
 
 /* ---------- colors ---------- */
@@ -25,7 +62,13 @@ function applyCatColors() {
 
 /* ================= selection & actions ================= */
 const isSel = (kind, id) => ui.sel?.kind === kind && ui.sel.id === id;
+/* a field still being edited in Properties belongs to what is selected now: save it before that changes */
+function commitEdit() {
+  const a = document.activeElement;
+  if (a && propsEl.contains(a) && /INPUT|SELECT|TEXTAREA/.test(a.tagName)) a.blur();   // fires its change event
+}
 function select(kind, id) {
+  commitEdit();
   ui.sel = kind ? { kind, id } : null;
   ui.multi.clear();
   if (kind === 'rack') ui.lastRack = id;
@@ -34,11 +77,13 @@ function select(kind, id) {
 }
 const selectedDevIds = () => (ui.multi.size ? [...ui.multi] : ui.sel?.kind === 'device' ? [ui.sel.id] : []);
 function setMulti(ids) {
+  commitEdit();
   ui.multi = new Set(ids);
   if (ui.multi.size === 1) { ui.sel = { kind: 'device', id: ids[0] }; ui.multi.clear(); }
   else ui.sel = ui.multi.size ? { kind: 'device', id: [...ui.multi][0] } : null;
 }
 function toggleMulti(id) {
+  commitEdit();
   const cur = new Set(selectedDevIds());
   if (cur.has(id)) cur.delete(id); else cur.add(id);
   setMulti([...cur]);
@@ -98,11 +143,28 @@ function moveToRack(id, rackId) {
   if (!u) return toast(`No free ${f.dev.h}U space in ${to.name}`);
   applyMoves([{ id, rackId, patch: { u } }]);
 }
+/* a click on a device rather than on one of its ports (they are tiny until you zoom in) stands for its first free
+   port that fits: the same kind as the cable already started (an outlet for an inlet), else one on this side */
+function autoPort(id) {
+  const f = findDev(id); if (!f) return '';
+  const used = portUse()[id] || {}, ka = ui.pending && ui.pending !== id ? ui.pendingPort : null;
+  const shown = new Set(portLayout(layout(), f.rack, f.dev).filter(p => p.side === ui.face).map(p => p.key));
+  const keys = allPortKeys(f.dev).filter(k => !used[k]
+    && (!ka || (portKind(k) === portKind(ka) && (portKind(k) !== 'power' || k[0] !== ka[0]))));
+  return keys.find(k => shown.has(k)) || keys[0] || '';
+}
 function connectClick(id, port = '') {
   const dv = findDev(id).dev;
   const total = nPorts(dv) + nUplinks(dv) + nInlets(dv) + nOutlets(dv);
-  if (!port) return toast(total ? 'Click on a port' : `“${dv.name}” has no ports. Set a port count first`);
+  if (!total) return toast(`“${dv.name}” has no ports. Set a port count first`);
+  let picked = false;
+  if (!port && ui.pending !== id) {
+    port = autoPort(id); picked = !!port;
+    if (!port) return toast(ui.pending ? `“${dv.name}” has no free port that fits this cable` : `“${dv.name}” has no free ports`);
+  }
+  if (!port) return toast('Click another device to finish the cable, or press Esc to cancel');
   if (portUse()[id]?.[port]) return toast(`${dv.name} ${portName(dv, port)} is already in use`);
+  if (picked && !ui.pending) toast(`${dv.name} ${portName(dv, port)}, the first free one. Now click another device or one of its ports`);
   if (!ui.pending) { ui.pending = id; ui.pendingPort = port; return renderAll(); }
   if (ui.pending === id) {
     if (ui.pendingPort === port) { ui.pending = null; return renderAll(); }
@@ -120,6 +182,7 @@ function connectClick(id, port = '') {
   const warn = cableCheck(c);
   if (warn) toast('⚠ ' + warn);
   else if (type !== ui.cableType) toast(`Used a ${ctype(type).name} cable for these ports`);
+  else if (picked) toast(`Connected to ${dv.name} ${portName(dv, port)}, its first free port. Change the ports in Properties`);
 }
 /* patch runs: the port pairs after cable c (P5→P5 gives P6→P6, P7→P7, …) while both are there and free */
 function runPairs(c, max = 96) {
@@ -238,19 +301,17 @@ function saveTemplate(dev) {
 
 function syncToolbar() {
   const two = ui.view === '2d' && ui.pane !== 'net';
-  $('#faceSeg').hidden = !two;
-  $('#routeSeg').hidden = !two;
+  $('#viewBar').hidden = !two;   // front / rear and how cables are drawn: options of the 2D view, shown on it
   $('#zoomLbl').hidden = !two;
-  $('#tidyBtn').hidden = !two || doc.settings.route !== 'ortho';
+  $('#tidyBtn').hidden = doc.settings.route !== 'ortho';
   $('#cableTypeWrap').hidden = ui.mode !== 'connect';
   stage.dataset.mode = ui.mode;
-  const on = (sel, attr, v) => { for (const b of document.querySelectorAll(sel)) b.classList.toggle('on', b.dataset[attr] === v); };
-  on('#viewSeg [data-view]', 'view', ui.pane === 'net' ? null : ui.view);
-  $('#viewSeg [data-pane="net"]').classList.toggle('on', ui.pane === 'net');
+  markOn('#viewSeg [data-view]', 'view', ui.pane === 'net' ? null : ui.view);
+  setOn($('#viewSeg [data-pane="net"]'), ui.pane === 'net');
   $('#splitBtn').setAttribute('aria-pressed', ui.pane === 'split');
-  on('#faceSeg button', 'face', ui.face);
-  on('#routeSeg button', 'route', doc.settings.route);
-  on('#modeSeg button', 'mode', ui.mode);
+  markOn('#faceSeg button', 'face', ui.face);
+  markOn('#routeSeg button', 'route', doc.settings.route);
+  markOn('#modeSeg button', 'mode', ui.mode);
 }
 function setMode(m) {
   ui.mode = m; ui.pending = null;
@@ -289,8 +350,8 @@ setPanel('right', ui.panels.right);
 function openDetails() {
   if (!ui.sel && !ui.multi.size) return;
   setPanel('right', true);
-  if (matchMedia('(max-width: 900px)').matches) $('.props-sec').scrollIntoView({ block: 'start', behavior: 'smooth' });
-  else $('#rightPanel').scrollTop = 0;
+  const smooth = matchMedia('(max-width: 900px)').matches && !matchMedia('(prefers-reduced-motion: reduce)').matches;
+  $('.props-sec').scrollIntoView({ block: 'start', behavior: smooth ? 'smooth' : 'auto' });
 }
 function onDoubleClick(el, fn) {
   let down = null, last = null;
@@ -449,6 +510,7 @@ svg.addEventListener('pointermove', e => {
   const p = toWorld(e), pe = e.target.closest?.('[data-port]');
   ui.hover = p;
   ui.hoverPort = pe ? { dev: pe.closest('[data-dev]').dataset.dev, key: pe.dataset.port } : null;
+  ui.hoverDev = e.target.closest?.('[data-dev]')?.dataset.dev || null;
   let light = true;   // most moves only touch the camera or the overlays
   if (ui.pan) {
     ui.cam.x = ui.pan.cx + e.clientX - ui.pan.sx;
@@ -575,7 +637,7 @@ function endPointer(e) {
 }
 svg.addEventListener('pointerup', endPointer);
 svg.addEventListener('pointercancel', endPointer);
-svg.addEventListener('pointerleave', () => { if (!ui.drag && !ui.pan && !ui.rewire && !ui.marquee) { ui.hover = null; schedule(true); } });
+svg.addEventListener('pointerleave', () => { if (!ui.drag && !ui.pan && !ui.rewire && !ui.marquee) { ui.hover = ui.hoverDev = ui.hoverPort = null; schedule(true); } });
 function zoomAt(mx, my, factor) {
   const k = ui.cam.k, k2 = clamp(k * factor, 0.03, 8);
   ui.cam.x = mx - (mx - ui.cam.x) * k2 / k;
@@ -618,16 +680,42 @@ svg.addEventListener('drop', e => {
 /* ================= side panels ================= */
 function renderRackList() {
   const pm = ui.power;
-  rackListEl.innerHTML = doc.racks.length ? doc.racks.map(r => {
-    const sel = isSel('rack', r.id) || selectedDevIds().some(id => findDev(id)?.rack === r);
+  const hasSel = r => isSel('rack', r.id) || selectedDevIds().some(id => findDev(id)?.rack === r);
+  const tab = (doc.racks.find(hasSel) || doc.racks[0])?.id;   // the one row in the tab order (arrow keys reach the others)
+  rackListEl.setAttribute('role', doc.racks.length ? 'listbox' : 'none');
+  patchHTML(rackListEl, doc.racks.length ? doc.racks.map(r => {
+    const sel = hasSel(r);
     const used = usedU(r), pct = Math.round(used / r.units * 100), info = pm.racks.find(x => x.rack === r);
     const heavy = info.kg > info.maxKg;
-    return `<div class="item rack-item${sel ? ' sel' : ''}" data-id="${r.id}" draggable="true" title="${used} of ${r.units}U used (${pct} %) · ${fmtW(info.watts)} · ${fmtKg(info.kg)} · drag to reorder">
-      <div class="ri-top"><span class="grow">${esc(r.name)}${heavy ? ' <span class="warn-dot" title="Over its weight limit">⚠</span>' : ''}</span><span class="muted">${used}/${r.units}U</span></div>
-      <div class="meter"><i class="${pct >= 90 ? 'full' : ''}" style="width:${pct}%"></i></div></div>`;
-  }).join('') : '<div class="empty">No racks yet.</div>';
+    return `<div class="item rack-item${sel ? ' sel' : ''}" role="option" aria-selected="${isSel('rack', r.id)}" tabindex="${r.id === tab ? 0 : -1}" data-id="${r.id}" draggable="true" title="${used} of ${r.units}U used (${pct} %) · ${fmtW(info.watts)} · ${fmtKg(info.kg)} · drag to reorder">
+      <div class="ri-top"><span class="grow">${esc(r.name)}${heavy ? ' <span class="warn-dot" title="Over its weight limit">⚠</span><span class="sr-only">, over its weight limit</span>' : ''}</span><span class="muted">${used}/${r.units}U</span></div>
+      <div class="meter" aria-hidden="true"><i class="${pct >= 90 ? 'full' : ''}" style="width:${pct}%"></i></div></div>`;
+  }).join('') : '<div class="empty">No racks yet.</div>');
 }
 rackListEl.addEventListener('click', e => { const it = e.target.closest('[data-id]'); if (it) select('rack', it.dataset.id); });
+/* a list you can walk with the keyboard (the listbox pattern): arrows move and select, Enter or Space opens the
+   properties, Home / End jump to the ends. move(option, -1 | 1) handles Alt + arrow when the list can be reordered. */
+function listboxKeys(list, pick, move) {
+  list.addEventListener('keydown', e => {
+    const opt = e.target.closest('[role="option"]');
+    if (!opt || e.ctrlKey || e.metaKey) return;
+    const opts = [...list.querySelectorAll('[role="option"]')], i = opts.indexOf(opt);
+    const to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: opts.length - 1 }[e.key];
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); return pick(opt, true); }
+    if (to === undefined) return;
+    e.preventDefault(); e.stopPropagation();   // not the app's shortcuts (the arrows move devices)
+    if (e.altKey) { if (move && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) move(opt, e.key === 'ArrowUp' ? -1 : 1); return; }
+    const t = opts[clamp(to, 0, opts.length - 1)];
+    if (t && t !== opt) { t.focus(); pick(t, false); }
+  });
+}
+listboxKeys(rackListEl, (opt, open) => { select('rack', opt.dataset.id); if (open) openDetails(); }, (opt, dir) => {
+  const id = opt.dataset.id, i = doc.racks.findIndex(r => r.id === id), j = i + dir;
+  if (j < 0 || j >= doc.racks.length) return;
+  mutate(() => doc.racks.splice(j, 0, doc.racks.splice(i, 1)[0]));
+  rackListEl.querySelector(`[data-id="${id}"]`)?.focus();
+  toast(`${doc.racks[j].name} is now ${j + 1} of ${doc.racks.length} (${dir < 0 ? 'further left' : 'further right'} in the drawing)`);
+});
 /* drag racks in the list to change their order (left to right in the elevation) */
 let rackDragId = null;
 const clearDropMarks = () => rackListEl.querySelectorAll('.drop-before, .drop-after').forEach(el => el.classList.remove('drop-before', 'drop-after'));
@@ -668,14 +756,20 @@ rackListEl.addEventListener('dragend', () => {
 function renderCableList() {
   const name = id => esc(findDev(id)?.dev.name ?? '?');
   $('#cableCount').textContent = doc.cables.length || '';
-  if (!doc.cables.length) { cableListEl.innerHTML = '<div class="empty">No cables yet. Pick the Cable tool, then click a port and a port on another device.</div>'; return; }
+  cableListEl.setAttribute('role', doc.cables.length ? 'listbox' : 'none');   // the totals and the empty note are not choices
+  if (!doc.cables.length) {
+    patchHTML(cableListEl, '');
+    patchHTML(cableSumEl, '<div class="empty">No cables yet. Pick the Cable tool, then click a port and a port on another device.</div>');
+    return;
+  }
   const totals = {}, lens = cableLengths();
+  const tab = (doc.cables.find(c => isSel('cable', c.id)) || doc.cables[0]).id;
   const rows = doc.cables.map(c => {
     const len = lens[c.id] || 0, t = ctype(c.type), std = stdLength(len, t.kind), warn = cableCheck(c);
     const tt = (totals[c.type] ||= { n: 0, len: 0, std: {}, custom: 0 });
     tt.n++; tt.len += len;
     if (std) tt.std[std] = (tt.std[std] || 0) + 1; else tt.custom++;
-    return `<div class="item cable-item${isSel('cable', c.id) ? ' sel' : ''}" data-id="${c.id}"><span class="sw line" style="--c:${cableColor(c)}"></span>`
+    return `<div class="item cable-item${isSel('cable', c.id) ? ' sel' : ''}" role="option" aria-selected="${isSel('cable', c.id)}" tabindex="${c.id === tab ? 0 : -1}" data-id="${c.id}"><span class="sw line" style="--c:${cableColor(c)}"></span>`
       + `<span class="grow"><span class="ci-main">${name(c.a)}${fmtPort(c.pa)} → ${name(c.b)}${fmtPort(c.pb)}</span><span class="ci-sub">${esc(cableLabel(c))}</span></span>`
       + `${warn ? `<span class="warn-dot" title="${esc(warn)}">⚠</span>` : ''}<span class="muted" title="Estimated length · stock cord">≈${fmtLong(len)}<br>${std ? fmtStd(std) : 'custom'}</span></div>`;
   }).join('');
@@ -685,26 +779,28 @@ function renderCableList() {
     return `<div class="item"><span class="sw line" style="--c:${ctype(t).color}"></span><span class="grow">${esc(ctype(t).name)} · ${v.n}</span><span class="muted">≈${fmtLong(v.len)}</span></div>`
       + `<div class="bom">${parts.join(' · ')}</div>`;
   }).join('');
-  cableListEl.innerHTML = rows + `<h3 class="list-sub">Totals · cords to buy</h3>` + sum;
+  patchHTML(cableListEl, rows);
+  patchHTML(cableSumEl, `<h3 class="list-sub">Totals · cords to buy</h3>${sum}`);
 }
 cableListEl.addEventListener('click', e => { const it = e.target.closest('[data-id]'); if (it) select('cable', it.dataset.id); });
+listboxKeys(cableListEl, opt => select('cable', opt.dataset.id));
 
 function renderPowerPanel() {
   const pm = ui.power;
   const meter = (v, max) => { const pct = max ? Math.min(100, v / max * 100) : 0; return `<div class="meter"><i class="${pct > 100 * 0.999 ? 'over' : pct >= 80 ? 'full' : ''}" style="width:${pct}%"></i></div>`; };
   let h = '<div class="sub">Racks</div>';
-  h += pm.racks.map(r => `<div class="pw-row" data-rack="${r.rack.id}"><div class="ri-top"><span class="grow">${esc(r.rack.name)}</span><span class="muted">${fmtW(r.watts)} · ${btu(r.watts).toLocaleString()} BTU/h</span></div>`
+  h += pm.racks.map(r => `<div class="pw-row" role="button" tabindex="0" data-rack="${r.rack.id}"><div class="ri-top"><span class="grow">${esc(r.rack.name)}</span><span class="muted">${fmtW(r.watts)} · ${btu(r.watts).toLocaleString()} BTU/h</span></div>`
     + `<div class="ri-top small"><span class="grow muted">Weight</span><span class="${r.kg > r.maxKg ? 'bad-text' : 'muted'}">${fmtKg(r.kg)} / ${fmtKg(r.maxKg)}</span></div>${meter(r.kg, r.maxKg)}</div>`).join('');
   if (pm.sources.length) {
     h += '<div class="sub">Power sources</div>';
-    h += pm.sources.map(s => `<div class="pw-row" data-dev="${s.dev.id}"><div class="ri-top"><span class="grow">${esc(s.dev.name)}${s.dev.feed ? ` <span class="tag">${esc(s.dev.feed)}</span>` : ''}</span>`
+    h += pm.sources.map(s => `<div class="pw-row" role="button" tabindex="0" data-dev="${s.dev.id}"><div class="ri-top"><span class="grow">${esc(s.dev.name)}${s.dev.feed ? ` <span class="tag">${esc(s.dev.feed)}</span>` : ''}</span>`
       + `<span class="muted">${fmtW(s.normal)}${s.cap ? ' / ' + fmtW(s.cap) : ''}</span></div>${s.cap ? meter(s.worst, s.cap) : ''}`
       + `<div class="ri-top small"><span class="grow muted">${s.used}/${nOutlets(s.dev)} outlets</span><span class="muted">worst case ${fmtW(s.worst)}</span></div></div>`).join('');
   }
-  if (pm.warnings.length) h += '<div class="sub">Warnings</div>' + pm.warnings.map(w => `<div class="pw-warn ${w.level}" ${w.id ? `data-dev="${w.id}"` : `data-rack="${w.rack}"`}>⚠ ${esc(w.text)}</div>`).join('');
+  if (pm.warnings.length) h += '<div class="sub">Warnings</div>' + pm.warnings.map(w => `<div class="pw-warn ${w.level}" role="button" tabindex="0" ${w.id ? `data-dev="${w.id}"` : `data-rack="${w.rack}"`}>⚠ ${esc(w.text)}</div>`).join('');
   if (pm.unpowered.length) h += `<div class="sub">Not powered yet · ${pm.unpowered.length}</div><div class="hint">${pm.unpowered.map(id => esc(pm.devs[id].dev.name)).join(', ')}</div>`;
   if (!pm.sources.length && !pm.warnings.length) h += '<p class="hint">Add a PDU, vertical PDU or UPS and connect power cables (rear view) to see loads here.</p>';
-  powerEl.innerHTML = h;
+  patchHTML(powerEl, h);
   $('#powerCount').textContent = pm.warnings.length ? '⚠ ' + pm.warnings.length : '';
 }
 powerEl.addEventListener('click', e => {
@@ -726,7 +822,7 @@ function renderCheckPanel() {
   if (!n) h += `<p class="hint ok-text">✓ Every device has power and data${c.checked ? '' : ' (nothing to check yet)'}</p>`;
   const row = p => {
     const lamps = [p.power !== 'na' && p.power !== 'ok' && [p.power, 'Power: ' + p.pWhy], p.data !== 'na' && p.data !== 'ok' && [p.data, 'Data: ' + p.dWhy]].filter(Boolean);
-    return `<div class="chk-row" data-dev="${p.id}"><span class="lamp ${p.level === 'bad' ? 'none' : 'partial'}"></span>`
+    return `<div class="chk-row" role="button" tabindex="0" data-dev="${p.id}"><span class="lamp ${p.level === 'bad' ? 'none' : 'partial'}"></span>`
       + `<span class="grow"><span class="ci-main">${esc(p.dev.name)} <span class="muted">· ${esc(p.rack.name)} ${isZeroU(p.dev) ? '0U' : 'U' + p.dev.u}</span></span>`
       + lamps.map(([, t]) => `<span class="ci-sub">${esc(t)}</span>`).join('') + '</span></div>';
   };
@@ -734,9 +830,9 @@ function renderCheckPanel() {
   h += group('Not connected', c.problems.filter(p => p.level === 'bad'));
   h += group('Partly connected', c.problems.filter(p => p.level === 'warn'));
   if (c.cableIssues.length) h += `<div class="sub">Cable problems · ${c.cableIssues.length}</div>` + c.cableIssues.map(({ c: cb, why }) =>
-    `<div class="chk-row" data-cable="${cb.id}"><span class="lamp partial"></span><span class="grow"><span class="ci-main">${esc(cableLabel(cb))}</span><span class="ci-sub">${esc(why)}</span></span></div>`).join('');
+    `<div class="chk-row" role="button" tabindex="0" data-cable="${cb.id}"><span class="lamp partial"></span><span class="grow"><span class="ci-main">${esc(cableLabel(cb))}</span><span class="ci-sub">${esc(why)}</span></span></div>`).join('');
   h += '<p class="hint" style="margin-top:8px">Power starts at a PDU or UPS with “Has building power” switched on. Tick “Spare / not in use” on a device to leave it out.</p>';
-  checkEl.innerHTML = h;
+  patchHTML(checkEl, h);
 }
 checkEl.addEventListener('click', e => {
   if (e.target.closest('[data-chk="toggle"]')) return setCheck(!ui.check);
@@ -749,6 +845,8 @@ function setCheck(on) {
   try { localStorage.setItem('rackviz.check', on ? '1' : '0'); } catch (e) { /* ignore */ }
   if (on) $('details.sec[data-key="check"]').open = true;
   renderAll();
+  // the list of problems moves to the top of the right panel (see main.checking in the CSS): show it
+  if (on && ui.panels.right && !matchMedia('(max-width: 900px)').matches) $('#rightPanel').scrollTop = 0;
   if (on) toast(checkSummary());
 }
 checkBtn.addEventListener('click', () => setCheck(!ui.check));
@@ -789,7 +887,7 @@ function portTableHTML(dev) {
     let to = '<span class="muted">—</span>';
     if (c) {
       const [od, ok] = c.a === dev.id && c.pa === k ? [c.b, c.pb] : [c.a, c.pa], o = findDev(od);
-      to = `<i class="sw line" style="--c:${cableColor(c)}"></i>${o ? esc(o.dev.name) + ' ' + portShort(ok) : '?'}`;
+      to = `<button type="button" class="cell-link" data-cid="${c.id}" title="Select this cable"><i class="sw line" style="--c:${cableColor(c)}"></i>${o ? esc(o.dev.name) + ' ' + portShort(ok) : '?'}</button>`;
     }
     return `<tr${c ? ` data-cid="${c.id}" class="link"` : ''}><td>${portShort(k)}</td><td class="muted">${esc(connName(dev, k))}</td><td>${to}</td></tr>`;
   }).join('');
@@ -873,7 +971,7 @@ function rackPropsHTML(r) {
       <label>Max load (kg)<input data-f="maxLoad" type="number" min="0" step="10" value="${rackMaxLoad(r)}"></label>
       <label>Width (${u})<input data-f="width" type="number" step="any" value="${toDisp(r.width)}"></label>
       <label>Depth (${u})<input data-f="depth" type="number" step="any" value="${toDisp(r.depth)}"></label>
-      <label class="full">Cable channel (diagram)<select data-f="channel">${opt('both', 'Both sides · nearest one', r.channel || 'both')}${opt('left', 'Left side only', r.channel)}${opt('right', 'Right side only', r.channel)}</select></label>
+      <label class="full">Side channel for arranged cables<select data-f="channel">${opt('both', 'Both sides · nearest one', r.channel || 'both')}${opt('left', 'Left side only', r.channel)}${opt('right', 'Right side only', r.channel)}</select></label>
     </div>
     <dl class="kv">
       <dt>Usable height</dt><dd>${fmt(usable, 'cm')} · ${fmt(usable, 'in')}</dd>
@@ -924,7 +1022,7 @@ function multiPropsHTML(ids) {
     <div class="color-row"><span>Color</span><input type="color" data-mf="color" value="${devColor(devs[0].dev)}"><button data-mact="resetColor">Use category colors</button></div>
     <label>Move to rack<select data-mf="rack"><option value="">Choose a rack…</option>${doc.racks.map(r => opt(r.id, r.name, '')).join('')}</select></label>
     <div class="row"><button data-mact="up" title="Move them all up">▲</button><button data-mact="down" title="Move them all down">▼</button><button data-mact="dup">Duplicate</button><button data-mact="copy">Copy</button><button data-mact="del" class="danger">Delete all</button></div>
-    <ul class="mlist">${devs.map(f => `<li data-id="${f.dev.id}"><span class="sw k-${T_(f.dev).cat}" ${f.dev.color ? `style="--c:${f.dev.color}"` : ''}></span>${esc(f.dev.name)}<span class="muted">${esc(f.rack.name)} · ${isZeroU(f.dev) ? '0U' : 'U' + f.dev.u}</span></li>`).join('')}</ul>
+    <ul class="mlist">${devs.map(f => `<li data-id="${f.dev.id}"><button type="button" class="mrow" data-id="${f.dev.id}"><span class="sw k-${T_(f.dev).cat}" ${f.dev.color ? `style="--c:${f.dev.color}"` : ''}></span>${esc(f.dev.name)}<span class="muted">${esc(f.rack.name)} · ${isZeroU(f.dev) ? '0U' : 'U' + f.dev.u}</span></button></li>`).join('')}</ul>
     <p class="hint">Shift-click adds or removes a device · Shift-drag on empty space selects with a box · Ctrl+C, Ctrl+V and Ctrl+D copy, paste and duplicate.</p>
   </div>`;
 }
@@ -934,10 +1032,12 @@ function globalPropsHTML() {
     <div class="empty-props"><svg class="ic"><use href="#i-cursor"/></svg>
       <p><strong>Nothing selected</strong><br>Click a rack, device or cable to edit it. Shift-click or Shift-drag selects several devices.<br>
       <button class="link tour-link" data-tour-start>New here? Take the tour</button></p></div>
+    <h4>Units</h4>
+    <label>Lengths in<select data-g="unit">${opt('cm', 'Centimetres (cm)', s.unit)}${opt('in', 'Inches (in)', s.unit)}${opt('mm', 'Millimetres (mm)', s.unit)}</select></label>
     <h4>Layout</h4>
     <label>Space between racks (${ui.unit})<input data-g="gap" type="number" step="any" min="0" value="${toDisp(s.gap)}"></label>
     <h4>Cables between racks</h4>
-    <label>Route in diagram view<select data-g="via">${opt('top', 'Overhead tray', s.via)}${opt('bottom', 'Underfloor', s.via)}</select></label>
+    <label>Route when cables are arranged<select data-g="via">${opt('top', 'Overhead tray', s.via)}${opt('bottom', 'Underfloor', s.via)}</select></label>
     <h4>Cable labels</h4>
     <label>Pattern<input data-g="labelPattern" value="${esc(s.labelPattern)}" spellcheck="false"></label>
     <p class="hint">Tokens: {rack} {u} {port} {device}. Example: ${esc(doc.cables[0] ? endLabel(doc.cables[0].a, doc.cables[0].pa) : 'A-U41-P1')}</p>
@@ -954,7 +1054,8 @@ function renderProps() {
   else if (s?.kind === 'rack' && doc.racks.some(r => r.id === s.id)) h = rackPropsHTML(doc.racks.find(r => r.id === s.id));
   else if (s?.kind === 'cable' && doc.cables.some(c => c.id === s.id)) h = cablePropsHTML(doc.cables.find(c => c.id === s.id));
   else h = globalPropsHTML();
-  propsEl.innerHTML = h;
+  const key = multi ? 'multi' : s ? s.kind + ':' + s.id : 'none';
+  patchHTML(propsEl, `<div class="props-body" data-id="${esc(key)}">${h}</div>`);
 }
 
 propsEl.addEventListener('change', e => {
@@ -963,6 +1064,7 @@ propsEl.addEventListener('change', e => {
     const g = el.dataset.g;
     if (g === 'gap') return mutate(() => (doc.settings.gap = Math.max(0, fromDisp(+raw || 0))));
     if (g === 'labelPattern') return mutate(() => (doc.settings.labelPattern = String(raw).trim() || '{rack}-U{u}-{port}'));
+    if (g === 'unit') { doc.settings.unit = raw; save(); return renderAll(); }   // a display preference: not an undo step
     return mutate(() => (doc.settings[g] = raw));
   }
   if (el.dataset.mf) return updateMulti(el.dataset.mf, raw);
@@ -1184,7 +1286,7 @@ function renderPalette() {
     const items = Object.entries(TYPES).filter(([, t]) => t.cat === cat);
     return `<div class="pal-group"><div class="pal-head">${label}</div>` + items.map(([k, t]) => item(k, t.label, t.zeroU ? '0U' : t.h + 'U', cat)).join('') + '</div>';
   }).join('');
-  paletteEl.innerHTML = h;
+  patchHTML(paletteEl, h);
 }
 paletteEl.addEventListener('click', e => {
   const del = e.target.closest('[data-del-tpl]');
@@ -1237,24 +1339,25 @@ function drawConvRuler() {
 }
 
 /* ---------- colors & cable types editor ---------- */
-const styleEl = $('#styleEditor'), cableTypeSel = $('#cableType'), unitSel = $('#unitSel');
+const styleEl = $('#styleEditor'), cableTypeSel = $('#cableType');
 function renderStyleEditor() {
   const used = {};
   doc.cables.forEach(c => (used[c.type] = (used[c.type] || 0) + 1));
   const rows = kind => doc.settings.cableTypes.filter(t => t.kind === kind).map(t => `<div class="trow" data-ct="${t.id}">
-      <input type="color" data-ct-f="color" value="${t.color}" title="Color">
-      <input data-ct-f="name" value="${esc(t.name)}" title="Name">
+      <input type="color" data-ct-f="color" value="${t.color}" title="Color" aria-label="${esc(t.name)} color">
+      <input data-ct-f="name" value="${esc(t.name)}" title="Name" aria-label="Name of the ${esc(t.name)} cable type">
       <span class="muted" title="Cables of this type">${used[t.id] || 0}</span>
-      <button class="icon" data-ct-act="del" title="Remove type">×</button></div>`).join('');
-  styleEl.innerHTML = '<div class="sub">Data cable types</div>' + rows('data')
+      <button class="icon" data-ct-act="del" title="Remove type" aria-label="Remove the ${esc(t.name)} cable type">×</button></div>`).join('');
+  patchHTML(styleEl, '<div class="sub">Data cable types</div>' + rows('data')
     + '<button class="small" data-ct-act="add" data-kind="data">+ Add data cable type</button>'
     + '<div class="sub">Power cable types</div>' + rows('power')
     + '<button class="small" data-ct-act="add" data-kind="power">+ Add power cable type</button>'
     + '<div class="sub">Equipment colors</div>'
-    + CATS.map(([k, label]) => `<div class="trow"><input type="color" data-cat="${k}" value="${cssVar('--k-' + k)}"><span>${label}</span><span class="muted">${Object.values(TYPES).filter(t => t.cat === k).map(t => t.label).join(', ')}</span></div>`).join('')
-    + '<button class="small" data-ct-act="resetCats">Reset equipment colors</button>';
+    + CATS.map(([k, label]) => `<div class="trow"><input type="color" data-cat="${k}" value="${cssVar('--k-' + k)}" aria-label="${label} equipment color"><span>${label}</span><span class="muted">${Object.values(TYPES).filter(t => t.cat === k).map(t => t.label).join(', ')}</span></div>`).join('')
+    + '<button class="small" data-ct-act="resetCats">Reset equipment colors</button>');
   if (!doc.settings.cableTypes.some(t => t.id === ui.cableType)) ui.cableType = doc.settings.cableTypes[0].id;
-  cableTypeSel.innerHTML = cableTypeOptions(ui.cableType);
+  patchHTML(cableTypeSel, cableTypeOptions(ui.cableType));
+  cableTypeSel.value = ui.cableType;
   cableTypeSel.style.borderLeftColor = ctype(ui.cableType).color;
 }
 styleEl.addEventListener('change', e => {
@@ -1312,9 +1415,18 @@ function renderSearch() {
   searchHits = all.slice(0, SEARCH_MAX);
   searchActive = clamp(searchActive, 0, Math.max(0, searchHits.length - 1));
   searchRes.hidden = !searchIn.value.trim();
-  searchRes.innerHTML = searchHits.length ? searchHits.map((h, i) => `<button class="sr${i === searchActive ? ' on' : ''}" data-i="${i}"><span class="tag">${h.kind}</span><span class="grow"><span class="ci-main">${esc(h.title)}</span><span class="ci-sub">${esc(h.sub)}</span></span></button>`).join('')
-      + (all.length > SEARCH_MAX ? `<div class="empty">Showing ${SEARCH_MAX} of ${all.length} · keep typing to narrow it down</div>` : '')
-    : '<div class="empty">No matches</div>';
+  // a combobox with a list of results: the input keeps the focus, the arrows move the highlighted result
+  searchRes.innerHTML = searchHits.length ? searchHits.map((h, i) => `<button class="sr${i === searchActive ? ' on' : ''}" role="option" id="sr${i}" aria-selected="${i === searchActive}" tabindex="-1" data-i="${i}"><span class="tag">${h.kind}</span><span class="grow"><span class="ci-main">${esc(h.title)}</span><span class="ci-sub">${esc(h.sub)}</span></span></button>`).join('')
+      + (all.length > SEARCH_MAX ? `<div class="empty" role="presentation">Showing ${SEARCH_MAX} of ${all.length} · keep typing to narrow it down</div>` : '')
+    : '<div class="empty" role="presentation">No matches</div>';
+  searchIn.setAttribute('aria-expanded', !searchRes.hidden);
+  if (searchHits.length) searchIn.setAttribute('aria-activedescendant', 'sr' + searchActive); else searchIn.removeAttribute('aria-activedescendant');
+  $('#sr' + searchActive)?.scrollIntoView({ block: 'nearest' });
+}
+function closeSearch() {
+  searchRes.hidden = true;
+  searchIn.setAttribute('aria-expanded', 'false');
+  searchIn.removeAttribute('aria-activedescendant');
 }
 /* select something and bring it into view */
 function focusItem(item) {
@@ -1339,8 +1451,8 @@ function focusItem(item) {
 searchIn.addEventListener('input', () => { searchActive = 0; renderSearch(); });
 searchIn.addEventListener('keydown', e => {
   if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); searchActive += e.key === 'ArrowDown' ? 1 : -1; renderSearch(); }
-  else if (e.key === 'Enter' && searchHits[searchActive]) { focusItem(searchHits[searchActive]); searchRes.hidden = true; searchIn.blur(); }
-  else if (e.key === 'Escape') { searchIn.value = ''; searchRes.hidden = true; searchIn.blur(); }
+  else if (e.key === 'Enter' && searchHits[searchActive]) { focusItem(searchHits[searchActive]); closeSearch(); searchIn.blur(); }
+  else if (e.key === 'Escape') { searchIn.value = ''; closeSearch(); searchIn.blur(); }
 });
 searchIn.addEventListener('focus', () => searchIn.value.trim() && renderSearch());
 searchRes.addEventListener('mousedown', e => {
@@ -1348,10 +1460,10 @@ searchRes.addEventListener('mousedown', e => {
   if (!b) return;
   e.preventDefault();
   focusItem(searchHits[+b.dataset.i]);
-  searchRes.hidden = true;
+  closeSearch();
   searchIn.blur();
 });
-searchIn.addEventListener('blur', () => setTimeout(() => (searchRes.hidden = true), 120));
+searchIn.addEventListener('blur', () => setTimeout(closeSearch, 120));
 
 /* ================= toolbar ================= */
 $('#viewSeg').addEventListener('click', e => {
@@ -1375,8 +1487,6 @@ $('#tidyBtn').addEventListener('click', () => {
   mutate(() => (doc.routeOrder = res.orders));
   toast(`Tidied: ${res.before} → ${res.after} crossing${res.after === 1 ? '' : 's'} (${Math.round(performance.now() - t0)} ms)`);
 });
-unitSel.value = ui.unit;
-unitSel.addEventListener('change', () => { doc.settings.unit = unitSel.value; save(); renderAll(); });
 $('#fitBtn').addEventListener('click', () => { if (ui.view === '3d' && T.ready) frame3D(); else { fit(); draw2D(); } });
 $('#zoomIn').addEventListener('click', () => zoomBy(1.25));
 $('#zoomOut').addEventListener('click', () => zoomBy(0.8));
@@ -1385,10 +1495,11 @@ $('#redoBtn').addEventListener('click', redo);
 
 /* file menu */
 const fileBtn = $('#fileBtn'), fileMenu = $('#fileMenu');
-function showMenu(on) { fileMenu.hidden = !on; fileBtn.setAttribute('aria-expanded', on); }
+function showMenu(on) { fileMenu.hidden = !on; fileBtn.setAttribute('aria-expanded', on); if (on) keepInside(fileMenu); }
 fileBtn.addEventListener('click', e => { e.stopPropagation(); showMenu(fileMenu.hidden); });
 document.addEventListener('click', e => { if (!fileMenu.hidden && !e.target.closest('.menu-wrap')) showMenu(false); });
 fileMenu.addEventListener('click', e => { if (e.target.closest('[data-closes]')) showMenu(false); });
+menuKeys(fileBtn, fileMenu, showMenu);
 $('#exportBtn').addEventListener('click', () => download(new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' }), 'rack-layout.json'));
 $('#drawingBtn').addEventListener('click', openExport);
 $('#csvBtn').addEventListener('click', exportCSV);
@@ -1402,7 +1513,8 @@ importFile.addEventListener('change', async () => {
     if (!validDoc(d)) throw new Error('bad file');
     ui.sel = null; ui.multi.clear();
     mutate(() => { doc = normalize(d); ensurePorts(); });
-    unitSel.value = ui.unit; fit(); renderAll();
+    hideExample();
+    fit(); renderAll();
     if (T.ready) frame3D();
   } catch { toast('That file is not a rack layout'); }
 });
@@ -1417,10 +1529,31 @@ $('#newBtn').addEventListener('click', e => {
   }
   reset();
   showMenu(false);
+  clearLayout();
+  fileBtn.focus();
+});
+/* an empty layout, keeping the settings (units, colours, cable types); one undo step brings the old one back */
+function clearLayout() {
+  hideExample();
   ui.sel = null; ui.multi.clear(); ui.pending = null; ui.measure = null;
   mutate(() => { const s = doc.settings; doc = blankDoc(); doc.settings = s; });
   fit(); renderAll();
-});
+  toast('Started an empty layout. Undo (Ctrl+Z) brings the previous one back');
+}
+
+/* first visit: the racks are an example. Say so, and offer to start empty (until either button is used) */
+const exampleNote = $('#exampleNote');
+try {
+  if (firstVisit) localStorage.setItem('rackviz.example', '1');
+  exampleNote.hidden = localStorage.getItem('rackviz.example') !== '1';
+} catch (e) { exampleNote.hidden = !firstVisit; }
+function hideExample() {
+  exampleNote.hidden = true;
+  try { localStorage.removeItem('rackviz.example'); } catch (e) { /* ignore */ }
+}
+$('#exampleClear').addEventListener('click', () => { clearLayout(); $('#emptyAdd').focus(); });
+$('#exampleKeep').addEventListener('click', () => { hideExample(); rackListEl.querySelector('[tabindex="0"]')?.focus(); });
+window.addEventListener('storage', e => { if (e.key === 'rackviz.example' && !e.newValue) exampleNote.hidden = true; });   // dismissed in another tab
 
 /* theme: auto -> light -> dark */
 const themeBtn = $('#themeBtn');
@@ -1463,6 +1596,8 @@ for (const d of document.querySelectorAll('details.sec')) {
 /* ================= keyboard ================= */
 document.addEventListener('keydown', e => {
   if (document.querySelector('dialog[open], #tour:not([hidden])')) return;   // dialogs and the tour handle their own keys
+  // rows that act as buttons (power, connections, selection lists) work like buttons: Enter or Space
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('[role="button"]:not(button)')) { e.preventDefault(); return e.target.click(); }
   const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName);
   const key = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;
   if (mod && key === 'k') { e.preventDefault(); return searchIn.focus(); }
@@ -1486,13 +1621,13 @@ document.addEventListener('keydown', e => {
   else if (key === 'c') setMode('connect');
   else if (key === 'm') setMode('measure');
   else if (key === 'r' && ui.view === '2d') setFace(ui.face === 'front' ? 'rear' : 'front');
-  else if (key === 'f') { if (ui.pane === 'net') fitNet(); else $('#fitBtn').click(); }
+  else if (key === 'f') { if (ui.pane !== 'racks') fitNet(); if (ui.pane !== 'net') $('#fitBtn').click(); }   // side by side: both
   else if (key === 'n') setPane(ui.pane === 'split' ? 'racks' : 'split');
   else if (key === 'k') setCheck(!ui.check);
   else if (e.key === 'Enter' && document.activeElement === document.body) openDetails();
   else if (e.key === '/') { e.preventDefault(); searchIn.focus(); }
-  else if (e.key === '+' || e.key === '=') zoomBy(1.25);
-  else if (e.key === '-' || e.key === '_') zoomBy(0.8);
+  else if (e.key === '+' || e.key === '=') { if (ui.pane === 'net') netCenterZoom(1.25); else zoomBy(1.25); }
+  else if (e.key === '-' || e.key === '_') { if (ui.pane === 'net') netCenterZoom(0.8); else zoomBy(0.8); }
   else if (e.key === '?') helpDlg.showModal();
   else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && selectedDevIds().length) {
     e.preventDefault();
@@ -1507,6 +1642,8 @@ function renderStage() {
   hud();
 }
 function renderAll() {
+  const had = document.activeElement, zone = had?.closest?.('#props, #rackList, #cableList');
+  const at = zone && zone !== propsEl ? [...zone.querySelectorAll('[role="option"]')].indexOf(had) : -1;
   for (const id of [...ui.multi]) if (!findDev(id)) ui.multi.delete(id);
   if (ui.multi.size === 1) { ui.sel = { kind: 'device', id: [...ui.multi][0] }; ui.multi.clear(); }
   if (ui.sel) {
@@ -1520,6 +1657,10 @@ function renderAll() {
   ui.conn = connectionModel(ui.power);
   stage.classList.toggle('checking', !!ui.check);
   netPane.classList.toggle('checking', !!ui.check);
+  mainEl.classList.toggle('checking', !!ui.check);
+  // check mode: the list of problems comes first in the right panel (moved in the page, so Tab follows it)
+  const chkSec = $('details.sec[data-key="check"]'), first = ui.check ? $('.props-sec') : $('details.sec[data-key="style"]');
+  if (chkSec.nextElementSibling !== first) first.before(chkSec);
   applyCatColors();
   syncToolbar();
   renderStyleEditor();
@@ -1538,6 +1679,14 @@ function renderAll() {
   $('#undoBtn').disabled = !undoStack.length;
   $('#redoBtn').disabled = !redoStack.length;
   renderStage();
+  // the focused control went away with what it showed (a deleted device, another selection): keep the
+  // keyboard where it was working instead of dropping it at the top of the page
+  if (zone && !had.isConnected && document.activeElement === document.body) {
+    const opts = zone === propsEl ? [] : [...zone.querySelectorAll('[role="option"]')];
+    const to = zone === propsEl ? $('#propsTitle') : opts[Math.min(Math.max(at, 0), opts.length - 1)];
+    if (to && opts.length) for (const o of opts) o.tabIndex = o === to ? 0 : -1;
+    to?.focus({ preventScroll: true });
+  }
 }
 function renderLegend() {
   const n = {};
@@ -1562,7 +1711,6 @@ window.addEventListener('storage', e => {
   ui.drag = null; ui.marquee = null; ui.pending = null; cancelRewire();
   doc = normalize(d);
   ensurePorts();
-  unitSel.value = ui.unit;
   renderAll();
   toast('Updated with changes made in another tab');
 });

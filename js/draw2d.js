@@ -237,15 +237,16 @@ function fit() {
   // only cables between racks use the overhead / underfloor trays
   const between = ortho ? doc.cables.filter(c => { const A = findDev(c.a), B = findDev(c.b); return A && B && A.rack !== B.rack; }) : [];
   const under = between.filter(c => (c.via || doc.settings.via) === 'bottom').length, over = between.length - under;
-  // margins for the ruler labels, the legend and the zoom controls are in screen pixels,
-  // so they depend on the scale: iterate a few times to settle it
+  // margins for the ruler labels, the bar and legend over the drawing and the zoom controls are in screen
+  // pixels, so they depend on the scale: iterate a few times to settle it
   const top = Math.min(...Object.values(L.racks).map(R => R.top), L.h) - (ortho ? 110 + over * LANE : 90);
   const bottom = L.h + (under ? 60 + under * LANE : 30);
   const x1 = Math.max(L.w, 600) + 60;
+  const st = $('.stage-top'), padTop = st.offsetHeight ? st.offsetTop + st.offsetHeight : 0;
   let k = 0.2, x0 = -260, y0 = top, y1 = bottom;
   for (let i = 0; i < 3; i++) {
     x0 = -130 - 70 / k;
-    y0 = top - (doc.cables.length ? 44 / k : 0);
+    y0 = top - padTop / k;
     y1 = bottom + 44 / k;
     k = Math.min(r.width / (x1 - x0), r.height / (y1 - y0)) * 0.96;
   }
@@ -253,6 +254,7 @@ function fit() {
   ui.fitK = k;
   ui.userMoved = false;
 }
+new ResizeObserver(() => { if (!ui.userMoved && ui.view === '2d' && doc.racks.length) { fit(); draw2D(); } }).observe($('.stage-top'));
 /* bring a view-coordinate rectangle into the middle of the screen */
 function centerOn(b) {
   const r = svg.getBoundingClientRect();
@@ -288,11 +290,13 @@ function hud() {
     t = ui.mode === 'connect' ? 'Cables are drawn port to port in the 2D view'
       : 'Drag to orbit · right-drag to pan · scroll to zoom · grid = 50 cm · move devices in 2D';
   } else if (ui.mode === 'connect') {
-    const pd = ui.pending && findDev(ui.pending)?.dev;
-    t = pd ? `${pd.name} ${portName(pd, ui.pendingPort)} → click a port on another device · Esc to cancel`
+    const pd = ui.pending && findDev(ui.pending)?.dev, small = PORT * ui.cam.k < 9;   // ports too small to aim at
+    t = pd ? `${pd.name} ${portName(pd, ui.pendingPort)} → click another device or one of its ports · Esc to cancel`
+      : small ? `Click a device to start a cable from its first free port, or zoom in to pick a port · ${ui.face} view`
       : `Click a port to start a cable · ${ui.face} view`;
-    const hp = ui.hoverPort && findDev(ui.hoverPort.dev)?.dev;
+    const hp = ui.hoverPort && findDev(ui.hoverPort.dev)?.dev, hd = !hp && ui.hoverDev && ui.hoverDev !== ui.pending && findDev(ui.hoverDev)?.dev;
     if (hp) t += `   ·   ${hp.name} ${portLabel(hp, ui.hoverPort.key)} · ${portUse()[hp.id]?.[ui.hoverPort.key] ? 'in use' : 'free'}`;
+    else if (hd) { const k = autoPort(hd.id); t += `   ·   ${hd.name}: ${k ? `click for ${portName(hd, k)}` : 'no free port that fits'}`; }
   } else if (ui.mode === 'measure') {
     if (ui.measure) {
       const { a, b } = ui.measure, dy = Math.abs(b.y - a.y), dx = Math.abs(b.x - a.x);

@@ -1,7 +1,8 @@
 'use strict';
 /* =====================================================================
    Rack Visualizer · exports
-   Drawings: the 2D scene is rendered off-screen with a print theme, read
+   Drawings: the 2D scene (and, if asked, the data and power diagrams below
+   it) is rendered off-screen with a print theme, read
    back as simple primitives (paths and text) sorted into layers, then
    written as SVG (Inkscape / Illustrator layers), PDF (optional-content
    layers, which AutoCAD's PDFIMPORT and Acrobat understand) or PNG.
@@ -11,7 +12,8 @@
 
 const PX_MM = 0.25;   // 1 screen pixel of line width becomes 0.25 mm on paper
 const LAYER_ORDER = ['Title', 'Floor', 'Ruler', 'Racks', 'Rack units', 'Devices (far side)', 'Devices', 'Data ports', 'Power ports',
-  '*cables', 'Labels', 'Cable labels', 'Other'];
+  '*cables', 'Labels', 'Cable labels', 'Other', 'Data diagram', 'Power diagram'];
+const NET_LAYER = { data: 'Data diagram', power: 'Power diagram' };
 
 function download(blob, name) {
   const a = document.createElement('a');
@@ -30,9 +32,21 @@ function scenePrims(face, opts, N) {
   document.body.appendChild(host);
   try { return collectPrims(host); } finally { host.remove(); }
 }
-function layerOf(el) {
+/* a diagram, the way it is arranged on screen; 1 px of it becomes 0.25 mm on paper, like the line widths */
+function diagramPrims(layer, N) {
+  const markup = netPrintSVG(layer);
+  if (!markup) return null;
+  const host = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  host.setAttribute('class', 'netscene print');
+  host.style.cssText = 'position:fixed;left:-30000px;top:0;width:10px;height:10px;overflow:hidden';
+  host.innerHTML = `<g transform="scale(${PX_MM * N})">${markup}</g>`;
+  document.body.appendChild(host);
+  try { return collectPrims(host, NET_LAYER[layer]); } finally { host.remove(); }
+}
+function layerOf(el, layer0) {
   const c = el.classList, up = s => el.closest(s);
-  if (c.contains('cable-hit') || c.contains('end-handle')) return null;
+  if (c.contains('cable-hit') || c.contains('end-handle') || c.contains('nl-hit')) return null;
+  if (layer0) return layer0;
   if (up('.ruler')) return 'Ruler';
   if (c.contains('floor')) return 'Floor';
   const cab = up('[data-cable]');
@@ -47,9 +61,10 @@ function layerOf(el) {
 }
 /* computed colour → [r, g, b] blended onto white by its opacity, or null when invisible */
 function paint(v, op) {
-  const m = /rgba?\(([^)]+)\)/.exec(v || '');
-  if (!m) return null;
-  const [r, g, b, a = 1] = m[1].split(/[ ,/]+/).filter(Boolean).map(parseFloat);
+  const m = /rgba?\(([^)]+)\)/.exec(v || ''), mix = !m && /color\(srgb ([^)]+)\)/.exec(v || '');   // color-mix() comes back as color(srgb …)
+  if (!m && !mix) return null;
+  let [r, g, b, a = 1] = (m || mix)[1].split(/[ ,/]+/).filter(Boolean).map(parseFloat);
+  if (mix) [r, g, b] = [r, g, b].map(x => x * 255);
   const al = a * op;
   if (al < 0.02) return null;
   return [r, g, b].map(x => Math.round(x * al + 255 * (1 - al)));
@@ -88,25 +103,35 @@ function toSegs(el) {
     default: return parsePath(el.getAttribute('d') || '');
   }
 }
-function collectPrims(root) {
+/* layer0: put everything on that one layer (a diagram) instead of sorting it by what it is */
+function collectPrims(root, layer0 = null) {
   const prims = [];
   const opacityOf = el => { let o = 1; for (let e = el; e && e !== root; e = e.parentElement) o *= parseFloat(getComputedStyle(e).opacity); return o; };
+  const toRoot = root.getScreenCTM()?.inverse();   // element → root coordinates (the diagram's boxes are placed with transforms)
   for (const el of root.querySelectorAll('rect, line, path, circle, text')) {
-    const layer = layerOf(el); if (!layer) continue;
+    const layer = layerOf(el, layer0); if (!layer) continue;
+    const ctm = toRoot && el.getScreenCTM(), m = ctm && toRoot.multiply(ctm);
+    const moved = m && !(m.a === 1 && m.b === 0 && m.c === 0 && m.d === 1 && m.e === 0 && m.f === 0);
+    const pt = (x, y) => (moved ? [m.a * x + m.c * y + m.e, m.b * x + m.d * y + m.f] : [x, y]);
     const cs = getComputedStyle(el);
     if (cs.display === 'none') continue;
     const op = opacityOf(el);
     if (op < 0.03) continue;
     const fill = paint(cs.fill, op);
     if (el.tagName === 'text') {
-      if (fill && el.textContent.trim()) prims.push({ layer, t: 'text', x: +el.getAttribute('x'), y: +el.getAttribute('y'), text: el.textContent,
-        size: parseFloat(cs.fontSize), bold: parseInt(cs.fontWeight, 10) >= 600, anchor: cs.textAnchor, central: cs.dominantBaseline === 'central', fill });
+      const [x, y] = pt(+el.getAttribute('x') || 0, +el.getAttribute('y') || 0);
+      const text = cs.textTransform === 'uppercase' ? el.textContent.toUpperCase() : el.textContent;
+      if (fill && text.trim()) prims.push({ layer, t: 'text', x, y, text,
+        size: parseFloat(cs.fontSize) * (moved ? Math.hypot(m.a, m.b) : 1), bold: parseInt(cs.fontWeight, 10) >= 600,
+        anchor: cs.textAnchor, central: cs.dominantBaseline === 'central', fill });
       continue;
     }
     const sw = parseFloat(cs.strokeWidth) || 0, stroke = sw ? paint(cs.stroke, op) : null;
     if (!fill && !stroke) continue;
     const dash = cs.strokeDasharray && cs.strokeDasharray !== 'none' ? cs.strokeDasharray.split(/[ ,]+/).map(parseFloat).filter(v => v > 0) : null;
-    prims.push({ layer, t: 'path', segs: toSegs(el), fill, stroke, sw, dash });
+    let segs = toSegs(el);
+    if (moved) segs = segs.map(sg => { const o = [sg[0]]; for (let i = 1; i + 1 < sg.length; i += 2) o.push(...pt(sg[i], sg[i + 1])); return o; });
+    prims.push({ layer, t: 'path', segs, fill, stroke, sw, dash });
   }
   return prims;
 }
@@ -131,16 +156,32 @@ function orderLayers(prims) {
   return [...new Set(prims.map(p => p.layer))].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 }
 
-/* build the drawing: one or two views (front above rear), a title, margins */
+/* build the drawing: one or two views (front above rear), the diagrams asked for below them, a title, margins.
+   missing: the diagrams left out because there was nothing to draw */
 function buildDrawing(opts, N) {
   const faces = opts.face === 'both' ? ['front', 'rear'] : [opts.face];
-  let prims = [], yOff = 0;
-  const size = 3.5 * N;   // title text: 3.5 mm on paper
+  let prims = [], yOff = 0, x0 = null;
+  const size = 3.5 * N, missing = [];   // title text: 3.5 mm on paper
+  const head = (text, y) => opts.title && prims.push({ layer: 'Title', t: 'text', x: x0, y, text, size, bold: true, anchor: 'start', fill: [17, 17, 17] });
   for (const face of faces) {
     let p = scenePrims(face, opts, N);
     const bb = primBounds(p), dy = yOff - bb.y + (opts.title ? size * 2.2 : 0);
-    p = p.map(q => shiftPrim(q, dy));
-    if (opts.title) prims.push({ layer: 'Title', t: 'text', x: bb.x, y: yOff + size, text: `${face === 'front' ? 'FRONT' : 'REAR'} ELEVATION · scale 1:${N}`, size, bold: true, anchor: 'start', fill: [17, 17, 17] });
+    x0 ??= bb.x;
+    p = p.map(q => shiftPrim(q, 0, dy));
+    head(`${face === 'front' ? 'FRONT' : 'REAR'} ELEVATION · scale 1:${N}`, yOff + size);
+    prims = prims.concat(p);
+    yOff += bb.h + (opts.title ? size * 2.2 : 0) + 25 * N;
+  }
+  const elevW = Math.max(...prims.filter(q => q.layer !== 'Title').map(q => primBounds([q])).map(b => b.x + b.w)) - x0;
+  for (const layer of opts.diagrams || []) {
+    let p = diagramPrims(layer, N);
+    if (!p?.length) { missing.push(NET_LAYER[layer].toLowerCase()); continue; }
+    // as wide as the racks at most, or 400 mm on paper when they are narrower; text shrinks with it
+    const maxW = Math.max(elevW, 400 * N), w0 = primBounds(p).w;
+    if (w0 > maxW) p = p.map(q => scalePrim(q, maxW / w0));
+    const bb = primBounds(p), dy = yOff - bb.y + (opts.title ? size * 2.2 : 0);
+    p = p.map(q => shiftPrim(q, x0 - bb.x, dy));
+    head(`${NET_LAYER[layer].toUpperCase()} · not to scale`, yOff + size);
     prims = prims.concat(p);
     yOff += bb.h + (opts.title ? size * 2.2 : 0) + 25 * N;
   }
@@ -149,11 +190,15 @@ function buildDrawing(opts, N) {
     prims.push({ layer: 'Title', t: 'text', x: bb.x, y: bb.y + bb.h + size * 2, text: `Rack Visualizer · ${new Date().toISOString().slice(0, 10)} · dimensions in mm`, size: size * 0.75, bold: false, anchor: 'start', fill: [90, 90, 90] });
   }
   const bb = primBounds(prims), m = 10 * N;   // 10 mm paper margin
-  return { prims, bb: { x: bb.x - m, y: bb.y - m, w: bb.w + 2 * m, h: bb.h + 2 * m } };
+  return { prims, bb: { x: bb.x - m, y: bb.y - m, w: bb.w + 2 * m, h: bb.h + 2 * m }, missing };
 }
-function shiftPrim(p, dy) {
-  if (p.t === 'text') return { ...p, y: p.y + dy };
-  return { ...p, segs: p.segs.map(s => s.map((v, i) => (i > 0 && i % 2 === 0 ? v + dy : v))) };
+function scalePrim(p, f) {
+  if (p.t === 'text') return { ...p, x: p.x * f, y: p.y * f, size: p.size * f };
+  return { ...p, segs: p.segs.map(s => s.map((v, i) => (i === 0 ? v : v * f))) };
+}
+function shiftPrim(p, dx, dy) {
+  if (p.t === 'text') return { ...p, x: p.x + dx, y: p.y + dy };
+  return { ...p, segs: p.segs.map(s => s.map((v, i) => (i === 0 ? v : v + (i % 2 ? dx : dy)))) };
 }
 
 /* ---------- writers ---------- */
@@ -290,21 +335,27 @@ function outsideDialog(dlg, e) {
   return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
 }
 exportDlg.addEventListener('click', e => { if (outsideDialog(exportDlg, e) || e.target.closest('[data-close]')) exportDlg.close(); });
+/* opened from the File menu, which is closed by now: give the focus back to the File button */
+exportDlg.addEventListener('close', () => {
+  const a = document.activeElement;
+  if (!a || a === document.body || exportDlg.contains(a)) $('#fileBtn').focus();
+});
 exportForm.addEventListener('submit', async e => {
   e.preventDefault();
   const f = exportForm, fmtSel = f.format.value;
-  const opts = { face: f.face.value, ruler: f.ruler.checked, cables: f.cables.checked, labels: f.labels.checked, title: f.titled.checked };
+  const opts = { face: f.face.value, ruler: f.ruler.checked, cables: f.cables.checked, labels: f.labels.checked, title: f.titled.checked,
+    diagrams: [f.netData.checked && 'data', f.netPower.checked && 'power'].filter(Boolean) };
   let N = +f.scale.value;
   exportDlg.close();
   try {
-    let { prims, bb } = buildDrawing(opts, N);
+    let { prims, bb, missing } = buildDrawing(opts, N);
     // PDF pages are limited to 200 in (5080 mm): step up the scale until the drawing fits
-    while (fmtSel === 'pdf' && Math.max(bb.w, bb.h) / N > 5000 && N < 500) { N *= 2; ({ prims, bb } = buildDrawing(opts, N)); }
+    while (fmtSel === 'pdf' && Math.max(bb.w, bb.h) / N > 5000 && N < 500) { N *= 2; ({ prims, bb, missing } = buildDrawing(opts, N)); }
     const name = `rack-layout-${opts.face}`;
     if (fmtSel === 'pdf') download(primsToPDF(prims, bb, N), `${name}-1to${N}.pdf`);
     else if (fmtSel === 'svg') download(new Blob([primsToSVG(prims, bb, N, false)], { type: 'image/svg+xml' }), `${name}-1to${N}.svg`);
     else download(await svgToPng(primsToSVG(prims, bb, N, true), bb, +f.png.value), `${name}.png`);
-    toast(`Exported ${fmtSel.toUpperCase()}${fmtSel === 'png' ? '' : ` at 1:${N}`}`);
+    toast(`Exported ${fmtSel.toUpperCase()}${fmtSel === 'png' ? '' : ` at 1:${N}`}${missing.length ? ` (no ${missing.join(' or ')}: nothing to draw yet)` : ''}`);
   } catch (err) {
     console.error(err);
     toast('Export failed: ' + err.message);

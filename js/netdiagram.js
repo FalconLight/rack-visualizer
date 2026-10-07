@@ -431,12 +431,12 @@ function netTrackOrder(group) {
 }
 
 /* ---------- drawing ---------- */
-function netNodeSVG(n, G) {
+function netNodeSVG(n, G, print = false) {
   const box = (cls, inner, attrs = '') => `<g class="nn ${cls}" data-nnode="${esc(n.id)}"${attrs} transform="translate(${n.x},${n.y})">${inner}</g>`;
   if (n.mains) return box('mains', `<rect class="nn-box" width="${NODE_W}" height="${NODE_H}" rx="10"/>`
     + `<text class="nn-name" x="${NODE_W / 2}" y="27" text-anchor="middle">Building power</text><text class="nn-sub" x="${NODE_W / 2}" y="44" text-anchor="middle">where the power chain starts</text>`);
-  const d = n.dev, cs = ui.conn?.devs[d.id], sel = isSel('device', d.id) || ui.multi.has(d.id);
-  const chk = ui.check && cs?.level ? ' chk-' + cs.level : '';
+  const d = n.dev, cs = !print && ui.conn?.devs[d.id], sel = !print && (isSel('device', d.id) || ui.multi.has(d.id));
+  const chk = !print && ui.check && cs?.level ? ' chk-' + cs.level : '';
   let sub;
   if (G.layer === 'power') {
     const src = ui.power.sources.find(s => s.dev.id === d.id);
@@ -453,10 +453,10 @@ function netNodeSVG(n, G) {
     + `<text class="nn-loc" x="16" y="51">${esc(clip(loc, 29))}</text>${lights}`,
     ` data-ndev="${d.id}"${d.color ? ` style="--c:${d.color}"` : ''}`);
 }
-function netLinkSVG(l, g, k) {
+function netLinkSVG(l, g, k, print = false) {
   if (l.feed) return `<g class="nl feed"><path class="nl-line" d="${g.d}"/></g>`;
   const c0 = l.cables[0].c, t = ctype(c0.type), n = l.cables.length;
-  const sel = l.cables.some(x => isSel('cable', x.c.id)), near = isSel('device', l.a) || isSel('device', l.b);
+  const sel = !print && l.cables.some(x => isSel('cable', x.c.id)), near = !print && (isSel('device', l.a) || isSel('device', l.b));
   const ports = end => { const ks = l.cables.map(x => portShort(x[end])); return ks.length > 3 ? `${ks[0]}…${ks[ks.length - 1]}` : ks.join(', '); };
   let s = `<g class="nl${t.kind === 'power' ? ' power' : ''}${sel ? ' sel' : ''}" data-nlink="${esc(l.id)}">`
     + `<path class="nl-hit" d="${g.d}"/><path class="nl-line" style="stroke:${cableColor(c0)}" d="${g.d}"/>`
@@ -488,10 +488,27 @@ function renderNet() {
   s += '</g><g class="nn-all">';
   for (const n of G.nodes.values()) s += netNodeSVG(n, G);
   s += '</g>';
-  const loose = [...G.nodes.values()].filter(n => !n.links.length).length;
-  if (P.auto && loose && P.looseY != null) s += `<text class="net-group" x="${Math.min(...[...G.nodes.values()].map(n => n.x))}" y="${P.looseY - 14}">${G.layer === 'power' ? 'No power cable' : 'No data connection'} · ${loose}</text>`;
+  s += netGroupLabel(G, P);
   netSvg.innerHTML = netGridSVG() + `<g id="netCam" transform="translate(${ui.net.cam.x},${ui.net.cam.y}) scale(${k})">${s}</g>`;
   ui.net.drawnK = k;
+  $('#netZoomLbl').textContent = Math.round(k / (ui.net.fitK || k) * 100) + '%';
+}
+/* the heading over the boxes with nothing connected, while the diagram arranges itself */
+function netGroupLabel(G, P) {
+  const loose = [...G.nodes.values()].filter(n => !n.links.length).length;
+  if (!P.auto || !loose || P.looseY == null) return '';
+  return `<text class="net-group" x="${Math.min(...[...G.nodes.values()].map(n => n.x))}" y="${P.looseY - 14}">${G.layer === 'power' ? 'No power cable' : 'No data connection'} · ${loose}</text>`;
+}
+/* the diagram of one layer for the drawing exports, as it is arranged on screen, without the selection,
+   check marks or status lights; null when there is nothing to show */
+function netPrintSVG(layer) {
+  const G = netGraph(layer);
+  if (!G.nodes.size) return null;
+  const P = netPlace(G), geo = netLinkGeometry(G);
+  let s = '';
+  for (const l of G.links.values()) s += netLinkSVG(l, geo.get(l.id), 1, true);
+  for (const n of G.nodes.values()) s += netNodeSVG(n, G, true);
+  return s + netGroupLabel(G, P);
 }
 
 /* ---------- view ---------- */
@@ -516,8 +533,8 @@ function drawNet() {
 }
 function syncNetBar() {
   const s = netSet();
-  for (const b of document.querySelectorAll('#netLayerSeg button')) b.classList.toggle('on', b.dataset.layer === ui.net.layer);
-  for (const b of document.querySelectorAll('#netLinkSeg button')) b.classList.toggle('on', b.dataset.links === s.links);
+  markOn('#netLayerSeg button', 'layer', ui.net.layer);
+  markOn('#netLinkSeg button', 'links', s.links);
   $('#netGridBtn').setAttribute('aria-pressed', s.grid);
   $('#netSnapBtn').setAttribute('aria-pressed', s.grid && s.snap);
   $('#netSnapBtn').disabled = !s.grid;
@@ -535,8 +552,10 @@ function netCamOnly() {   // pan: move the drawing and the grid, redraw only whe
 function fitNet(draw = true) {
   const r = netSvg.getBoundingClientRect(), b = ui.net.bounds;
   if (!r.width || !r.height || !b) return;
-  const top = 56, bottom = 44;   // room for the bar and the legend
-  const k = Math.min(1.25, Math.min(r.width / b.w, (r.height - top - bottom) / b.h) * 0.96);
+  // room for the bar at the top (it wraps onto two rows when the pane is narrow) and the legend and zoom at the bottom
+  const bar = $('.net-bar', netPane), zoom = $('#netZoom');
+  const top = bar.offsetTop + bar.offsetHeight + 10, bottom = r.height - zoom.offsetTop + 10;
+  const k = clamp(Math.min(r.width / b.w, Math.max(40, r.height - top - bottom) / b.h) * 0.96, 0.05, 1.25);
   ui.net.cam = { k, x: (r.width - b.w * k) / 2 - b.x * k, y: top + (r.height - top - bottom - b.h * k) / 2 - b.y * k };
   ui.net.fitK = k; ui.net.userMoved = false;
   if (draw) drawNet();
@@ -695,8 +714,9 @@ $('#netLinkSeg').addEventListener('click', e => { const b = e.target.closest('[d
 const arrangeBtn = $('#netArrangeBtn'), arrangeMenu = $('#netArrangeMenu');
 arrangeMenu.innerHTML = Object.entries(ARRANGE).map(([k, a]) => `<button role="menuitem" data-arrange="${k}"><span class="grow"><span class="ci-main">${a.label}</span><span class="ci-sub">${a.hint}</span></span></button>`).join('')
   + '<hr><button role="menuitem" data-arrange="auto"><span class="grow"><span class="ci-main">Automatic</span><span class="ci-sub">Arranges itself again as cables change; forgets moved boxes</span></span></button>';
-const showArrange = on => { arrangeMenu.hidden = !on; arrangeBtn.setAttribute('aria-expanded', on); };
+const showArrange = on => { arrangeMenu.hidden = !on; arrangeBtn.setAttribute('aria-expanded', on); if (on) keepInside(arrangeMenu, netPane.getBoundingClientRect()); };
 arrangeBtn.addEventListener('click', e => { e.stopPropagation(); showArrange(arrangeMenu.hidden); });
+menuKeys(arrangeBtn, arrangeMenu, showArrange);
 document.addEventListener('click', e => { if (!arrangeMenu.hidden && !e.target.closest('#netArrangeWrap')) showArrange(false); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !arrangeMenu.hidden) { showArrange(false); arrangeBtn.focus(); } });
 arrangeMenu.addEventListener('click', e => {

@@ -32,7 +32,7 @@ function init3D() {
   });
   const loop = () => {
     requestAnimationFrame(loop);
-    if (ui.view !== '3d') return;
+    if (ui.view !== '3d' || ui.pane === 'net') return;
     T.controls.update();
     r.render(T.scene, T.camera);
   };

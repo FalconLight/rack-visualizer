@@ -10,9 +10,12 @@ A minimal tool to plan the space networking equipment takes up in racks.
 - **Power budget**: load per PDU / UPS (normal and if a feed fails), A/B feed check, watts and BTU/h per rack, weight per rack
 - **Connection check**: small power and data lights on every device, and a check mode (<kbd>K</kbd>) that outlines what isn't connected and lists it. Power is followed along the chain from the PDUs / UPSs marked “Has building power”; devices can be marked as spare
 - **Views**: front and rear elevation, and 3D
+- **Network diagram** of the connections, laid out top-down (incoming lines, firewall, switches, endpoints), with a Data and a Power layer (the power chain from the building feed down). Show it next to the racks (<kbd>N</kbd>) with a draggable divider; selecting in one view selects and shows it in the other
 - **Exports**: PDF and SVG with layers (to scale, for CAD), PNG, and a CSV bill of materials
 - Search, port map, port numbers when zoomed in, multi-select, copy / paste, undo / redo, unit converter and measure tool
 - Reorder racks by dragging them in the rack list; duplicating a rack copies the cables inside it
+- Side panels that fold away for more room (the tabs on the drawing's edges, or <kbd>[</kbd> and <kbd>]</kbd>); double-click any device, rack or cable (in 2D, 3D or the network diagram) to open its properties
+- A guided tour of the main functions on the first visit; skip it any time, and take it again from Help (?)
 - Autosaves in the browser (and follows changes made in another tab); save / open layouts as JSON. Opened files are checked, so a layout from someone else can't inject anything into the page
 
 ## Run locally
@@ -33,7 +36,9 @@ The 3D view loads three.js from a CDN, so it needs an internet connection.
 | `js/routing.js` | Cable positions, curves, diagram routing, lengths, the Tidy optimiser |
 | `js/draw2d.js` | 2D elevation (front / rear) used by the live view and the exports |
 | `js/view3d.js` | 3D view |
+| `js/netdiagram.js` | The network diagram: graph, layered layout, drawing, pan / zoom / select |
 | `js/export.js` | PDF / SVG / PNG drawings and the CSV bill of materials |
 | `js/ui.js` | Panels, interaction, search, toolbar and keyboard shortcuts |
+| `js/tour.js` | The guided tour: its steps, highlight and cards |
 
 When you change the CSS or JS, raise the `?v=` number in `index.html` so browsers fetch the new files.

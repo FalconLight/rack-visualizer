@@ -106,7 +106,7 @@ label.ctx { display: inline-flex; flex-direction: row; align-items: center; gap:
 .menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 2px; }
 
 /* ---------- layout ---------- */
-main { flex: 1; min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr) 300px; }
+main { --lw: 260px; --rw: 300px; flex: 1; min-height: 0; display: grid; grid-template-columns: var(--lw) minmax(0, 1fr) var(--rw); }
 aside { overflow: auto; background: var(--panel); border-right: 1px solid var(--border); }
 aside.right { border-right: 0; border-left: 1px solid var(--border); }
 section, details.sec { padding: 14px 16px; border-bottom: 1px solid var(--border); }
@@ -203,7 +203,10 @@ label input, label select { color: var(--fg); }
 .sub { font-size: 12px; color: var(--muted); margin: 2px 0 8px; }
 
 /* ---------- stage ---------- */
-#stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg); }
+/* the middle of the screen: the racks, the network diagram, or both with a divider between them */
+#views { position: relative; display: flex; min-width: 0; min-height: 0; }
+#stage { position: relative; flex: 1 1 0; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg); }
+#views.split > #stage { flex: 0 0 calc(var(--split, 50%) - 3px); }
 #svg, #three { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; user-select: none; }
 #three canvas { display: block; }
 #three .msg { margin: 40px; color: var(--muted); }
@@ -326,7 +329,7 @@ kbd {
 
 /* ---------- responsive ---------- */
 @media (max-width: 1100px) {
-  main { grid-template-columns: 230px minmax(0, 1fr) 270px; }
+  main { --lw: 230px; --rw: 270px; }
   .bar .lbl { display: none; }
   .seg button { padding: 0 8px; }
 }
@@ -337,7 +340,9 @@ kbd {
   .bar > .divider:first-of-type { display: none; }
   .brand span { display: none; }
   main { display: flex; flex-direction: column; }
-  #stage { order: -1; height: 62vh; flex: none; border-bottom: 1px solid var(--border); }
+  #views { order: -1; height: 62vh; flex: none; border-bottom: 1px solid var(--border); }
+  #views.split { flex-direction: column; height: 92vh; }
+  #views.split #splitter { cursor: row-resize; }
   aside, aside.right { border: 0; overflow: visible; }
   #hud { max-width: calc(100% - 24px); bottom: 58px; }
 
@@ -453,3 +458,106 @@ button.ib[aria-pressed="true"], button.ib[aria-pressed="true"]:hover { backgroun
 .lamp.ok { background: var(--ok); } .lamp.partial { background: var(--warn); } .lamp.none { background: var(--bad); }
 .kv .lamp { margin: 0 6px 0 0; vertical-align: 0; }
 .ok-text { color: var(--ok); }
+
+/* ---------- guided tour ---------- */
+/* a full-window layer that keeps clicks off the app, a highlight whose huge shadow dims everything
+   around it, and the card */
+#tour { position: fixed; inset: 0; z-index: 60; }
+.tour-spot {
+  position: fixed; border-radius: 10px; pointer-events: none;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, .55); outline: 2px solid var(--accent);
+  transition: left .25s ease, top .25s ease, width .25s ease, height .25s ease;
+}
+#tour.center .tour-spot { outline: 0; }
+.tour-card {
+  position: fixed; width: min(340px, calc(100vw - 24px)); padding: 12px 16px 12px;
+  background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+}
+.tour-head { display: flex; align-items: center; justify-content: space-between; margin: -2px -8px 2px 0; }
+.tour-step { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); font-variant-numeric: tabular-nums; }
+.tour-card h2 { margin: 0 0 6px; font-size: 15px; }
+.tour-text { font-size: 13px; line-height: 1.5; }
+.tour-text b { font-weight: 600; }
+.tour-text kbd { min-width: 18px; padding: 0 4px; font-size: 10.5px; line-height: 15px; vertical-align: 1px; }
+.tour-dots { display: flex; gap: 4px; margin: 12px 0 10px; }
+.tour-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--seg-bg); }
+.tour-dots i.on { background: var(--accent); }
+.tour-foot { display: flex; align-items: center; gap: 6px; }
+.tour-foot .link { padding-left: 0; color: var(--muted); font-weight: 400; }
+.tour-link { padding: 0; margin-top: 6px; }
+@media (prefers-reduced-motion: reduce) { .tour-spot { transition: none; } }
+
+/* ---------- network diagram ---------- */
+#splitter { flex: 0 0 6px; cursor: col-resize; background: var(--border); position: relative; touch-action: none; }
+#splitter::after { content: ""; position: absolute; inset: 0 -4px; }   /* a wider grip than it looks */
+#splitter:hover, #splitter:focus-visible { background: var(--accent); outline: 0; }
+#netPane { position: relative; flex: 1 1 0; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg); }
+#netSvg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; user-select: none; cursor: grab; }
+#netSvg.panning { cursor: grabbing; }
+.net-bar { left: 12px; top: 12px; display: flex; align-items: center; gap: 10px; padding: 4px 4px 4px 12px; }
+.net-title { font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+#netLegend { left: 12px; bottom: 12px; padding: 7px 10px; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; max-width: calc(100% - 150px); }
+#netLegend span { display: inline-flex; align-items: center; gap: 6px; }
+#netLegend .sw.line { width: 16px; }
+#netZoom { right: 12px; bottom: 12px; display: flex; align-items: center; gap: 2px; padding: 3px; }
+#netZoom .ib { width: 28px; height: 28px; }
+#netZoom .divider { height: 18px; margin: 0 2px; }
+#splitBtn[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+/* boxes */
+.netscene text { pointer-events: none; fill: var(--fg); }
+.nn { cursor: pointer; }
+.nn-box { fill: var(--panel); stroke: var(--line-soft); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.nn:hover .nn-box { stroke: var(--accent); }
+.nn.sel .nn-box { stroke: var(--accent); stroke-width: 2.5; }
+.nn-stripe { fill: var(--c); }
+.netscene .nn-name { font-size: 12px; font-weight: 600; }
+.netscene .nn-sub { font-size: 10.5px; fill: var(--muted); }
+.netscene .nn-loc { font-size: 10px; fill: var(--faint); }
+.nn.mains { cursor: default; }
+.nn.mains .nn-box { fill: color-mix(in srgb, var(--warn) 10%, var(--panel)); stroke: var(--warn); stroke-dasharray: 5 4; }
+.nn .led { stroke-width: .8; }
+#netPane.checking .nn:not(.chk-bad):not(.chk-warn):not(.mains) { opacity: .45; }
+.nn.chk-bad .nn-box { stroke: var(--bad); stroke-width: 2.5; }
+.nn.chk-warn .nn-box { stroke: var(--warn); stroke-width: 2.5; }
+/* links */
+.nl-line { fill: none; stroke-width: 2.2; vector-effect: non-scaling-stroke; stroke-linecap: round; }
+.nl.power .nl-line { stroke-width: 2.8; }
+.nl.sel .nl-line { stroke-width: 4.5; }
+.nl-hit { fill: none; stroke: transparent; stroke-width: 12; vector-effect: non-scaling-stroke; cursor: pointer; }
+.nl-hit:hover + .nl-line { stroke-width: 3.6; }
+.nl.feed .nl-line { stroke: var(--warn); stroke-dasharray: 5 4; stroke-width: 1.6; }
+.nl-count { fill: var(--panel); stroke: var(--line-soft); stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
+.netscene .nl-count-t { font-size: 10px; font-weight: 650; text-anchor: middle; dominant-baseline: central; }
+.netscene .nl-port { font-size: 9.5px; fill: var(--muted); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; }
+.netscene .net-group { font-size: 11px; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; fill: var(--muted); }
+
+/* ---------- collapsible side panels ---------- */
+/* a tab on each edge of the drawing hides or shows the panel beside it; on phones, where the panels sit
+   below the drawing, a bar at the top of each folds it instead */
+.edge-tab {
+  position: absolute; top: 50%; z-index: 4; width: 16px; height: 48px; margin-top: -24px; padding: 0;
+  border: 1px solid var(--border); background: var(--panel); color: var(--muted); box-shadow: var(--shadow);
+}
+.edge-tab:hover { background: var(--hover); color: var(--fg); }
+.edge-tab .ic { width: 14px; height: 14px; transition: transform .15s; }
+#leftTab { left: 0; border-left: 0; border-radius: 0 8px 8px 0; }
+#rightTab { right: 0; border-right: 0; border-radius: 8px 0 0 8px; }
+#leftTab .ic, #rightTab[aria-expanded="false"] .ic { transform: rotate(90deg); }     /* points left */
+#rightTab .ic, #leftTab[aria-expanded="false"] .ic { transform: rotate(-90deg); }    /* points right */
+.panel-bar { display: none; }
+@media (min-width: 901px) {
+  main.no-left { --lw: 0px; }
+  main.no-right { --rw: 0px; }
+  main.no-left aside.left, main.no-right aside.right { visibility: hidden; overflow: hidden; border: 0; }
+}
+@media (max-width: 900px) {
+  .edge-tab { display: none; }
+  .panel-bar {
+    display: flex; justify-content: space-between; width: 100%; height: 42px; padding: 0 16px;
+    border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: var(--panel);
+    font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+  }
+  .panel-bar .ic { transition: transform .15s; }
+  .panel-bar[aria-expanded="false"] .ic { transform: rotate(-90deg); }
+  main.no-left aside.left > :not(.panel-bar), main.no-right aside.right > :not(.panel-bar) { display: none; }
+}

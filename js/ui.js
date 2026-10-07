@@ -237,7 +237,7 @@ function saveTemplate(dev) {
 }
 
 function syncToolbar() {
-  const two = ui.view === '2d';
+  const two = ui.view === '2d' && ui.pane !== 'net';
   $('#faceSeg').hidden = !two;
   $('#routeSeg').hidden = !two;
   $('#zoomLbl').hidden = !two;
@@ -245,7 +245,9 @@ function syncToolbar() {
   $('#cableTypeWrap').hidden = ui.mode !== 'connect';
   stage.dataset.mode = ui.mode;
   const on = (sel, attr, v) => { for (const b of document.querySelectorAll(sel)) b.classList.toggle('on', b.dataset[attr] === v); };
-  on('#viewSeg button', 'view', ui.view);
+  on('#viewSeg [data-view]', 'view', ui.pane === 'net' ? null : ui.view);
+  $('#viewSeg [data-pane="net"]').classList.toggle('on', ui.pane === 'net');
+  $('#splitBtn').setAttribute('aria-pressed', ui.pane === 'split');
   on('#faceSeg button', 'face', ui.face);
   on('#routeSeg button', 'route', doc.settings.route);
   on('#modeSeg button', 'mode', ui.mode);
@@ -261,9 +263,94 @@ function setView(v) {
   svg.toggleAttribute('hidden', v !== '2d');
   threeEl.hidden = v !== '3d';
   syncToolbar();
-  if (v === '3d' && init3D()) { resize3D(); build3D(); if (!T.framed) { frame3D(); T.framed = true; } }
+  if (v === '3d' && ui.pane !== 'net' && init3D()) { resize3D(); build3D(); if (!T.framed) { frame3D(); T.framed = true; } }
   renderStage();
 }
+/* side panels: either can be hidden for more room; both remember it */
+const mainEl = $('main'), PANEL_NAME = { left: 'racks and equipment panel ([)', right: 'properties panel (])' };
+ui.panels = { left: true, right: true };
+try { const p = JSON.parse(localStorage.getItem('rackviz.panels') || '{}'); for (const k of ['left', 'right']) if (typeof p[k] === 'boolean') ui.panels[k] = p[k]; } catch (e) { /* ignore */ }
+function setPanel(side, open) {
+  ui.panels[side] = open;
+  mainEl.classList.toggle('no-' + side, !open);
+  for (const b of document.querySelectorAll(`[data-panel="${side}"]`)) {
+    b.setAttribute('aria-expanded', open);
+    if (b.classList.contains('edge-tab')) { b.title = (open ? 'Hide the ' : 'Show the ') + PANEL_NAME[side]; b.setAttribute('aria-label', b.title); }
+  }
+  try { localStorage.setItem('rackviz.panels', JSON.stringify(ui.panels)); } catch (e) { /* ignore */ }
+}
+document.addEventListener('click', e => { const b = e.target.closest('[data-panel]'); if (b) setPanel(b.dataset.panel, !ui.panels[b.dataset.panel]); });
+setPanel('left', ui.panels.left);
+setPanel('right', ui.panels.right);
+/* double-click (or double-tap, or Enter) anything to see its properties: opens the right panel at the top.
+   The first click has already selected what was clicked, so that is what opens. Detected by hand: the
+   views redraw on that first click, and the browser drops its own dblclick when the element under the
+   pointer is replaced in between. */
+function openDetails() {
+  if (!ui.sel && !ui.multi.size) return;
+  setPanel('right', true);
+  if (matchMedia('(max-width: 900px)').matches) $('.props-sec').scrollIntoView({ block: 'start', behavior: 'smooth' });
+  else $('#rightPanel').scrollTop = 0;
+}
+function onDoubleClick(el, fn) {
+  let down = null, last = null;
+  el.addEventListener('pointerdown', e => { down = e.button === 0 ? { x: e.clientX, y: e.clientY } : null; });
+  el.addEventListener('pointerup', e => {
+    const click = down && Math.hypot(e.clientX - down.x, e.clientY - down.y) <= 5;   // not a drag or a pan
+    down = null;
+    if (!click) { last = null; return; }
+    const dbl = last && e.timeStamp - last.t < 450 && Math.hypot(e.clientX - last.x, e.clientY - last.y) < 8;
+    last = dbl ? null : { t: e.timeStamp, x: e.clientX, y: e.clientY };
+    if (dbl) fn();
+  });
+}
+onDoubleClick(svg, () => { if (ui.mode === 'select') openDetails(); });   // not while drawing cables or measuring
+onDoubleClick(netSvg, openDetails);
+onDoubleClick(threeEl, openDetails);
+onDoubleClick(rackListEl, openDetails);
+
+/* what the middle of the screen shows: the racks, the network diagram, or both side by side */
+const viewsEl = $('#views');
+function setPane(p) {
+  ui.pane = p;
+  try { localStorage.setItem('rackviz.pane', p); } catch (e) { /* ignore */ }
+  viewsEl.classList.toggle('split', p === 'split');
+  stage.hidden = p === 'net';
+  netPane.hidden = p === 'racks';
+  $('#splitter').hidden = p !== 'split';
+  syncToolbar();
+  if (p !== 'net') setView(ui.view);   // also starts the 3D view if that is the one showing
+  if (p !== 'racks') { ui.net.userMoved = false; drawNet(); }
+  hud();
+}
+function setSplit(r) {
+  ui.splitAt = clamp(r, 0.2, 0.8);
+  viewsEl.style.setProperty('--split', ui.splitAt * 100 + '%');
+}
+try { ui.pane = ['racks', 'net', 'split'].includes(localStorage.getItem('rackviz.pane')) ? localStorage.getItem('rackviz.pane') : 'racks'; } catch (e) { ui.pane = 'racks'; }
+try { setSplit(+localStorage.getItem('rackviz.splitAt') || 0.5); } catch (e) { setSplit(0.5); }
+/* the divider between the two views: drag (or arrow keys) to resize, double-click for half and half */
+const splitterEl = $('#splitter');
+splitterEl.addEventListener('pointerdown', e => {
+  splitterEl.setPointerCapture(e.pointerId);
+  const move = ev => {
+    const r = viewsEl.getBoundingClientRect(), column = getComputedStyle(viewsEl).flexDirection === 'column';
+    setSplit(column ? (ev.clientY - r.top) / r.height : (ev.clientX - r.left) / r.width);
+  };
+  const up = () => {
+    splitterEl.removeEventListener('pointermove', move); splitterEl.removeEventListener('pointerup', up);
+    try { localStorage.setItem('rackviz.splitAt', ui.splitAt); } catch (err) { /* ignore */ }
+  };
+  splitterEl.addEventListener('pointermove', move); splitterEl.addEventListener('pointerup', up);
+});
+splitterEl.addEventListener('dblclick', () => { setSplit(0.5); try { localStorage.setItem('rackviz.splitAt', 0.5); } catch (e) { /* ignore */ } });
+splitterEl.addEventListener('keydown', e => {
+  const d = { ArrowLeft: -0.05, ArrowUp: -0.05, ArrowRight: 0.05, ArrowDown: 0.05 }[e.key];
+  if (!d) return;
+  e.preventDefault(); e.stopPropagation();
+  setSplit(ui.splitAt + d);
+  try { localStorage.setItem('rackviz.splitAt', ui.splitAt); } catch (err) { /* ignore */ }
+});
 function setFace(f) {
   ui.face = f; ui.pending = null; ui.measure = null;
   cancelRewire();
@@ -845,7 +932,8 @@ function globalPropsHTML() {
   const s = doc.settings;
   return `<div class="stack">
     <div class="empty-props"><svg class="ic"><use href="#i-cursor"/></svg>
-      <p><strong>Nothing selected</strong><br>Click a rack, device or cable to edit it. Shift-click or Shift-drag selects several devices.</p></div>
+      <p><strong>Nothing selected</strong><br>Click a rack, device or cable to edit it. Shift-click or Shift-drag selects several devices.<br>
+      <button class="link tour-link" data-tour-start>New here? Take the tour</button></p></div>
     <h4>Layout</h4>
     <label>Space between racks (${ui.unit})<input data-g="gap" type="number" step="any" min="0" value="${toDisp(s.gap)}"></label>
     <h4>Cables between racks</h4>
@@ -1266,7 +1354,14 @@ searchRes.addEventListener('mousedown', e => {
 searchIn.addEventListener('blur', () => setTimeout(() => (searchRes.hidden = true), 120));
 
 /* ================= toolbar ================= */
-$('#viewSeg').addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (b) setView(b.dataset.view); });
+$('#viewSeg').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.pane) return setPane('net');
+  if (ui.pane === 'net') setPane('racks');
+  setView(b.dataset.view);
+});
+$('#splitBtn').addEventListener('click', () => setPane(ui.pane === 'split' ? 'racks' : 'split'));
 $('#faceSeg').addEventListener('click', e => { const b = e.target.closest('[data-face]'); if (b) setFace(b.dataset.face); });
 $('#modeSeg').addEventListener('click', e => { const b = e.target.closest('[data-mode]'); if (b) setMode(b.dataset.mode); });
 cableTypeSel.addEventListener('change', () => { ui.cableType = cableTypeSel.value; renderStyleEditor(); hud(); });
@@ -1367,10 +1462,13 @@ for (const d of document.querySelectorAll('details.sec')) {
 
 /* ================= keyboard ================= */
 document.addEventListener('keydown', e => {
-  if (document.querySelector('dialog[open]')) return;   // the dialog handles its own keys (Esc closes it)
+  if (document.querySelector('dialog[open], #tour:not([hidden])')) return;   // dialogs and the tour handle their own keys
   const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName);
   const key = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;
   if (mod && key === 'k') { e.preventDefault(); return searchIn.focus(); }
+  // [ and ] by key position too, so they work on layouts where those keys print something else
+  const bracket = e.key === '[' || e.code === 'BracketLeft' ? 'left' : e.key === ']' || e.code === 'BracketRight' ? 'right' : null;
+  if (bracket && !typing && !mod && !e.altKey) { e.preventDefault(); return setPanel(bracket, !ui.panels[bracket]); }
   if (typing) return;
   if (mod && (key === 'y' || (key === 'z' && e.shiftKey))) { e.preventDefault(); return redo(); }
   if (mod && key === 'z') { e.preventDefault(); return undo(); }
@@ -1388,8 +1486,10 @@ document.addEventListener('keydown', e => {
   else if (key === 'c') setMode('connect');
   else if (key === 'm') setMode('measure');
   else if (key === 'r' && ui.view === '2d') setFace(ui.face === 'front' ? 'rear' : 'front');
-  else if (key === 'f') $('#fitBtn').click();
+  else if (key === 'f') { if (ui.pane === 'net') fitNet(); else $('#fitBtn').click(); }
+  else if (key === 'n') setPane(ui.pane === 'split' ? 'racks' : 'split');
   else if (key === 'k') setCheck(!ui.check);
+  else if (e.key === 'Enter' && document.activeElement === document.body) openDetails();
   else if (e.key === '/') { e.preventDefault(); searchIn.focus(); }
   else if (e.key === '+' || e.key === '=') zoomBy(1.25);
   else if (e.key === '-' || e.key === '_') zoomBy(0.8);
@@ -1402,7 +1502,8 @@ document.addEventListener('keydown', e => {
 
 /* ================= render ================= */
 function renderStage() {
-  if (ui.view === '2d') draw2D(); else build3D();
+  if (ui.pane !== 'net') { if (ui.view === '2d') draw2D(); else build3D(); }
+  if (ui.pane !== 'racks') drawNet();
   hud();
 }
 function renderAll() {
@@ -1418,6 +1519,7 @@ function renderAll() {
   ui.power = powerModel();
   ui.conn = connectionModel(ui.power);
   stage.classList.toggle('checking', !!ui.check);
+  netPane.classList.toggle('checking', !!ui.check);
   applyCatColors();
   syncToolbar();
   renderStyleEditor();
@@ -1470,3 +1572,4 @@ save();
 applyPreset();
 renderConverter();
 renderAll();
+setPane(ui.pane);

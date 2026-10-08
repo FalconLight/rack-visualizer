@@ -511,6 +511,7 @@ svg.addEventListener('pointermove', e => {
   ui.hover = p;
   ui.hoverPort = pe ? { dev: pe.closest('[data-dev]').dataset.dev, key: pe.dataset.port } : null;
   ui.hoverDev = e.target.closest?.('[data-dev]')?.dataset.dev || null;
+  ui.hoverCable = e.target.closest?.('[data-cable]')?.dataset.cable || null;
   let light = true;   // most moves only touch the camera or the overlays
   if (ui.pan) {
     ui.cam.x = ui.pan.cx + e.clientX - ui.pan.sx;
@@ -637,7 +638,7 @@ function endPointer(e) {
 }
 svg.addEventListener('pointerup', endPointer);
 svg.addEventListener('pointercancel', endPointer);
-svg.addEventListener('pointerleave', () => { if (!ui.drag && !ui.pan && !ui.rewire && !ui.marquee) { ui.hover = ui.hoverDev = ui.hoverPort = null; schedule(true); } });
+svg.addEventListener('pointerleave', () => { if (!ui.drag && !ui.pan && !ui.rewire && !ui.marquee) { ui.hover = ui.hoverDev = ui.hoverPort = ui.hoverCable = null; schedule(true); } });
 function zoomAt(mx, my, factor) {
   const k = ui.cam.k, k2 = clamp(k * factor, 0.03, 8);
   ui.cam.x = mx - (mx - ui.cam.x) * k2 / k;
@@ -1041,7 +1042,8 @@ function globalPropsHTML() {
     <h4>Cable labels</h4>
     <label>Pattern<input data-g="labelPattern" value="${esc(s.labelPattern)}" spellcheck="false"></label>
     <p class="hint">Tokens: {rack} {u} {port} {device}. Example: ${esc(doc.cables[0] ? endLabel(doc.cables[0].a, doc.cables[0].pa) : 'A-U41-P1')}</p>
-    <label class="check"><input type="checkbox" data-g="showLabels"${s.showLabels ? ' checked' : ''}> Show labels at cable ends</label>
+    <label class="check"><input type="checkbox" data-g="showLabels"${s.showLabels ? ' checked' : ''}> Always show every cable's labels</label>
+    <p class="hint">Otherwise a cable's labels appear when you point at it or select it, so they stay out of each other's way.</p>
     <p class="hint">Stock cord lengths are suggested in metres, or in feet when units are inches.</p>
   </div>`;
 }

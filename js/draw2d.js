@@ -57,7 +57,7 @@ function sceneSVG(o) {
   }
 
   /* equipment mounted on the far side first, so the near side draws on top */
-  const devs = [];
+  const devs = [], numsTop = [];   // port numbers of the near side are drawn last, over the cables
   for (const r of doc.racks) for (const d of r.devices) devs.push({ r, d, near: d.mount === face });
   devs.sort((p, q) => p.near - q.near);
   for (const { r, d, near } of devs) {
@@ -66,9 +66,11 @@ function sceneSVG(o) {
     const sel = live && (isSel('device', d.id) || ui.multi.has(d.id));
     const cs = live && ui.conn?.devs[d.id];
     const chk = live && ui.check && cs && 'chk-' + (cs.level || (cs.power === 'na' && cs.data === 'na' ? 'na' : 'ok'));
+    const drg = live && ui.drag?.moved && ui.drag.ids.includes(d.id);
+    const dim = chk === 'chk-ok' || chk === 'chk-na';   // check mode fades the devices that are fine
     const cls = ['dev', 'k-' + t.cat, near ? 'near' : 'far', b.vertical && 'zerou', sel && 'sel',
       live && ui.pending === d.id && 'pending', devWarn(r, d) && 'bad', chk,
-      live && ui.drag?.moved && ui.drag.ids.includes(d.id) && 'dragging'].filter(Boolean).join(' ');
+      drg && 'dragging'].filter(Boolean).join(' ');
     const tip = `${d.name} · ${devU(d)}${near ? '' : ` · mounted at the ${d.mount}, you see its back`}`;
     s += `<g class="${cls}" data-dev="${d.id}"${d.color ? ` style="--c:${d.color}"` : ''}>`;
     if (b.vertical) {
@@ -90,14 +92,18 @@ function sceneSVG(o) {
       s += `<rect class="pt${p.up ? ' up' : ''}${p.power ? ' pwr' : ''}${c ? ' used' : ''}${drop}"${col ? ` style="fill:${col};stroke:${col}"` : ''}`
         + ` data-port="${p.key}" x="${VR(p.x, p.w)}" y="${p.y}" width="${p.w}" height="${p.h}"${p.power ? ' rx="3.5"' : ''}>`
         + `<title>${esc(portLabel(d, p.key))}${c ? ' · in use' + (live ? ', drag to move the cable' : '') : ''}</title></rect>`;
-      if (nums) s += `<text class="pt-num${c ? ' used' : ''}" x="${VR(p.x, p.w) + p.w / 2}" y="${p.y + p.h / 2}">${p.key.slice(1)}</text>`;
+      if (nums) {   // the halo is the port's own colour, so a cable passing under the number doesn't cut through it
+        const halo = drop ? (rt.err ? 'var(--bad)' : 'var(--accent)') : col;
+        const num = `<text class="pt-num${c ? ' used' : ''}${drg ? ' dragging' : ''}${dim ? ' dim' : ''}"${halo ? ` style="--halo:${halo}"` : ''} x="${VR(p.x, p.w) + p.w / 2}" y="${p.y + p.h / 2}">${p.key.slice(1)}</text>`;
+        if (near) numsTop.push(num); else s += num;
+      }
     }
     if (cs) s += ledsSVG(b, vx, cs, k);
     s += '</g>';
   }
 
   if (o.cables !== false) s += cablesSVG(L, port, o, X, VR);
-  return s;
+  return s + numsTop.join('');
 }
 
 /* status lights: small dots on the device's colour stripe, power above data (side by side on a vertical PDU).
@@ -132,8 +138,9 @@ function cablesSVG(L, port, o, X, VR) {
     s += `<path class="cable${t.kind === 'power' ? ' power' : ''}${partial ? ' back' : ''}${live && isSel('cable', c.id) ? ' sel' : ''}${moving ? ' ghosted' : ''}${cableCheck(c) ? ' warn' : ''}" style="stroke:${col}" d="${d}"><title>${esc(cableLabel(c))}</title></path>`;
     // the plug dot; left out when port numbers show, as the port itself is already in the cable's colour
     if (!(live && PORT * k >= 15)) for (const [P, Q] of [[a, A], [b, B]]) if (P.side === face) s += `<circle class="port" style="fill:${col}" cx="${Q.x}" cy="${Q.y}" r="6"/>`;
+    // vertical, reading upwards from just above the plug, so labels on neighbouring ports (14 px apart) don't overlap
     if (o.labels) for (const [P, Q, other] of [[a, A, b], [b, B, a]])
-      if (P.side === face) s += `<text class="clabel" x="${Q.x + 7}" y="${Q.y - 8}">${esc(c.label || endLabel(other.dev.id, other.key))}</text>`;
+      if (P.side === face) s += `<text class="clabel" transform="translate(${Q.x + 2.4},${Q.y - 9}) rotate(-90)">${esc(c.label || endLabel(other.dev.id, other.key))}</text>`;
     s += '</g>';
     if (!moving && live && isSel('cable', c.id) && ui.mode === 'select') {   // (the moving end is drawn in the overlays)
       for (const [e, P, Q] of [['a', a, A], ['b', b, B]]) if (P.side === face)
@@ -180,6 +187,7 @@ function overlaysSVG(L, k, face, X, VR) {
   }
   if (ui.mode === 'select' && ui.hover && !ui.drag && !ui.pan && !ui.rewire && !ui.marquee)
     s += `<line class="hover-line" x1="-120" x2="${L.w + 120}" y1="${ui.hover.y}" y2="${ui.hover.y}"/>`;
+  s += hoverLabelsSVG(L, k, face, X);
   if (ui.marquee) {
     const { a, b } = ui.marquee;
     s += `<rect class="marquee" x="${Math.min(a.x, b.x)}" y="${Math.min(a.y, b.y)}" width="${Math.abs(b.x - a.x)}" height="${Math.abs(b.y - a.y)}"/>`;
@@ -192,6 +200,30 @@ function overlaysSVG(L, k, face, X, VR) {
     s += `<text x="${b.x + 10 / k}" y="${b.y - 10 / k}" style="font-size:${fs}px">↕ ${fmt(dy)} · ${fmtU(dy)}</text>`;
     if (dx > 1) s += `<text x="${b.x + 10 / k}" y="${b.y + 8 / k}" style="font-size:${fs}px">↔ ${fmt(dx)}</text>`;
     s += '</g>';
+  }
+  return s;
+}
+
+/* The cable under the pointer is named next to the pointer; the selected cable gets a label at each end.
+   Both are drawn on top of everything, at a readable size at any zoom. Showing every label at once piles them
+   up where ports are close together, so that is a setting (and what exports use). */
+function hoverLabelsSVG(L, k, face, X) {
+  if (doc.settings.showLabels) return '';
+  const fs = Math.max(6.5, 12 / k), port = portMap(L);
+  let s = '';
+  for (const c of doc.cables) {
+    if (!isSel('cable', c.id)) continue;
+    const a = port(c.a, c.id, c.pa), b = port(c.b, c.id, c.pb);
+    if (!a || !b) continue;
+    for (const [P, other] of [[a, b], [b, a]]) if (P.side === face)
+      s += `<text class="clabel hot" style="font-size:${fs}px" transform="translate(${X(P.x) + fs * 0.37},${P.y - 9}) rotate(-90)">${esc(c.label || endLabel(other.dev.id, other.key))}</text>`;
+  }
+  const idle = ui.mode === 'select' && !ui.drag && !ui.pan && !ui.rewire && !ui.marquee;
+  const hc = idle && ui.hover && ui.hoverCable && doc.cables.find(c => c.id === ui.hoverCable);
+  if (hc) {   // to the right of the pointer, or to the left when it would run off the drawing
+    const txt = cableLabel(hc), pf = 12 / k, dx = pf * 1.1, sx = ui.hover.x * k + ui.cam.x;   // 12 screen px at any zoom
+    const flip = sx + 12 * (1.1 + txt.length * 0.6) > svg.clientWidth - 8;
+    s += `<text class="clabel hot" style="font-size:${pf}px" x="${ui.hover.x + (flip ? -dx : dx)}" y="${ui.hover.y - pf * 0.8}"${flip ? ' text-anchor="end"' : ''}>${esc(txt)}</text>`;
   }
   return s;
 }

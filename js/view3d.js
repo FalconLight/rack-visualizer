@@ -5,8 +5,11 @@
    ===================================================================== */
 
 const threeEl = $('#three');
+/* T: the three.js state (renderer, scene, camera, controls, the group that holds the drawn model) plus
+   ready (set up), framed (the camera has been placed once) and pickables (what a click can select) */
 const T = { ready: false, framed: false, pickables: [] };
 
+/* set up the renderer, scene, lights and orbit controls once; false when three.js did not load (no internet) */
 function init3D() {
   if (T.ready) return true;
   if (!window.THREE || !THREE.OrbitControls) {
@@ -40,6 +43,7 @@ function init3D() {
   T.ready = true;
   return true;
 }
+/* keep the renderer and the camera matched to the size of the pane */
 function resize3D() {
   if (!T.ready) return;
   const w = threeEl.clientWidth, h = threeEl.clientHeight;
@@ -48,6 +52,7 @@ function resize3D() {
   T.camera.aspect = w / h;
   T.camera.updateProjectionMatrix();
 }
+/* put the camera where it sees every rack */
 function frame3D() {
   const L = layout(), S = 0.001, tx = L.w * S / 2, ty = L.h * S / 2;
   const span = Math.max(L.w * S, L.h * S, 1);
@@ -55,6 +60,7 @@ function frame3D() {
   T.camera.position.set(tx + span * 0.6, ty + span * 0.45, span * 1.55);
   T.controls.update();
 }
+/* a click (not a drag) in the 3D view selects what is under the pointer */
 function pick3D(e) {
   const rect = T.renderer.domElement.getBoundingClientRect();
   const v = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
@@ -65,6 +71,7 @@ function pick3D(e) {
   if (ui.mode === 'connect') toast('Draw cables in the 2D view, port to port');
   else select(kind, id);
 }
+/* free what everything in a group uses on the graphics card, and empty the group */
 function disposeGroup(g) {
   g.traverse(o => {
     o.geometry?.dispose();
@@ -73,6 +80,7 @@ function disposeGroup(g) {
   });
   g.clear();
 }
+/* a text label that always faces the camera */
 function textSprite(text, color) {
   const c = document.createElement('canvas'); c.width = 512; c.height = 96;
   const g = c.getContext('2d');
@@ -89,11 +97,12 @@ function devZ(r, d, S) {
   const dep = d.depth * S;
   return d.mount === 'front' ? [zf - dep, zf] : [zb, zb + dep];
 }
+/* rebuild the whole 3D model from the layout: floor grid, racks, devices and cables */
 function build3D() {
   if (!T.ready) return;
   disposeGroup(T.group);
   T.pickables = [];
-  const S = 0.001, L = layout(), port = portMap(L), V3 = THREE.Vector3;
+  const S = 0.001, L = layout(), port = portMap(L);
   const C = n => new THREE.Color(cssVar(n));
   const lineMat = new THREE.LineBasicMaterial({ color: C('--line') });
   const softMat = new THREE.LineBasicMaterial({ color: C('--line-soft') });

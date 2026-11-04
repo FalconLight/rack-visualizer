@@ -18,11 +18,14 @@ function portMap(L) {
     return { ...base, x: r.x + r.w / 2, y: r.y + r.h / 2 };
   };
 }
+/* a curved cable from a to b: a cubic Bézier that sags below both ends, more the longer the run */
 function cableCurve(a, b) {
   const sag = 50 + Math.min(450, Math.abs(a.x - b.x) * 0.12 + Math.abs(a.y - b.y) * 0.12);
   return [a, { x: a.x, y: a.y + sag }, { x: b.x, y: b.y + sag }, b];
 }
+/* an SVG path for a cubic Bézier given as [start, control 1, control 2, end] */
 const bezPath = q => `M${q[0].x},${q[0].y} C${q[1].x},${q[1].y} ${q[2].x},${q[2].y} ${q[3].x},${q[3].y}`;
+/* the length of a cubic Bézier, found by sampling it */
 function bezLen(p) {
   let len = 0, prev = p[0];
   for (let i = 1; i <= 40; i++) {
@@ -35,11 +38,13 @@ function bezLen(p) {
   }
   return len;
 }
+/* the length of a polyline */
 function polyLen(pts) {
   let len = 0;
   for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
   return len;
 }
+/* an SVG path through the points with every corner rounded to radius r */
 function roundedPath(pts, r) {
   let d = `M${pts[0].x},${pts[0].y}`;
   for (let i = 1; i < pts.length - 1; i++) {
@@ -219,6 +224,7 @@ function routeSegs(pts) {
   }
   return { H, V };
 }
+/* does the horizontal run h = [x0, x1, y] cross the vertical run v = [y0, y1, x]? Touching ends don't count */
 const crosses = (h, v) => v[2] > h[0] + 0.01 && v[2] < h[1] - 0.01 && h[2] > v[0] + 0.01 && h[2] < v[1] - 0.01;
 /* crossings between two cables */
 function pairCrossings(A, B) {

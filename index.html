@@ -6,7 +6,7 @@
 <title>Rack Visualizer</title>
 <meta name="description" content="Plan the space networking equipment takes up in racks: rack units, ports, power, cables, 2D and 3D views.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232563eb' stroke-width='2' stroke-linecap='round'%3E%3Crect x='5' y='3' width='14' height='18' rx='2'/%3E%3Cpath d='M8 8h8M8 12h8M8 16h8'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css?v=45">
+<link rel="stylesheet" href="style.css?v=49">
 </head>
 <body>
 
@@ -41,6 +41,8 @@
     <symbol id="i-angle" viewBox="0 0 24 24"><path d="M5 19v-7h14V5"/><circle cx="5" cy="19" r="1.5"/><circle cx="19" cy="5" r="1.5"/></symbol>
     <symbol id="i-arrange" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="4.5" rx="1"/><rect x="3" y="16.5" width="6" height="4.5" rx="1"/><rect x="15" y="16.5" width="6" height="4.5" rx="1"/><path d="M12 7.5V12M6 16.5V12h12v4.5"/></symbol>
     <symbol id="i-split" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M12 4.5v15"/></symbol>
+    <symbol id="i-popout" viewBox="0 0 24 24"><path d="M13 4h7v7M20 4l-9 9"/><path d="M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/></symbol>
+    <symbol id="i-popin" viewBox="0 0 24 24"><path d="M20 11h-7V4M13 11l8-8"/><path d="M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/></symbol>
     <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
   </defs>
 </svg>
@@ -110,6 +112,7 @@
       <div class="sec-head">
         <h3 id="racksTitle">Racks</h3>
         <button class="link" id="newRackBtn" aria-expanded="false" aria-controls="addRackForm">+ New rack</button>
+        <button class="ib pop-btn" data-pop="left" title="Open this panel in its own window (for a second screen)" aria-label="Open this panel in its own window (for a second screen)"><svg class="ic"><use href="#i-popout"/></svg></button>
       </div>
       <div id="rackList" class="list" role="listbox" aria-labelledby="racksTitle" aria-describedby="rackListHelp"></div>
       <p class="sr-only" id="rackListHelp">Arrow keys move between racks. Alt with the up or down arrow changes the order.</p>
@@ -174,6 +177,8 @@
       <button class="ib" id="zoomIn" title="Zoom in (+)" aria-label="Zoom in"><svg class="ic"><use href="#i-plus"/></svg></button>
       <span class="divider"></span>
       <button class="ib" id="fitBtn" title="Fit everything (F)" aria-label="Fit view"><svg class="ic"><use href="#i-fit"/></svg></button>
+      <span class="divider"></span>
+      <button class="ib" data-pop="stage" title="Open this drawing in its own window (for a second screen)" aria-label="Open this drawing in its own window (for a second screen)"><svg class="ic"><use href="#i-popout"/></svg></button>
     </div>
     <div id="hud"></div>
   </div>
@@ -203,6 +208,8 @@
       <button class="ib" id="netZoomIn" title="Zoom in (+)" aria-label="Zoom in"><svg class="ic"><use href="#i-plus"/></svg></button>
       <span class="divider"></span>
       <button class="ib" id="netFit" title="Fit the whole diagram (F)" aria-label="Fit the whole diagram"><svg class="ic"><use href="#i-fit"/></svg></button>
+      <span class="divider"></span>
+      <button class="ib" data-pop="net" title="Open this drawing in its own window (for a second screen)" aria-label="Open this drawing in its own window (for a second screen)"><svg class="ic"><use href="#i-popout"/></svg></button>
     </div>
     <div id="netEmpty" class="empty-state" hidden><h2>Nothing to show yet</h2><p></p></div>
   </div>
@@ -212,7 +219,8 @@
   <aside class="right" id="rightPanel">
     <button class="panel-bar" data-panel="right" aria-controls="rightPanel" aria-expanded="true"><span>Properties &amp; panels</span><svg class="ic"><use href="#i-chev"/></svg></button>
     <section class="props-sec">
-      <div class="sec-head"><h3 id="propsTitle" tabindex="-1">Properties</h3></div>
+      <div class="sec-head"><h3 id="propsTitle" tabindex="-1">Properties</h3>
+        <button class="ib pop-btn" data-pop="right" title="Open this panel in its own window (for a second screen)" aria-label="Open this panel in its own window (for a second screen)"><svg class="ic"><use href="#i-popout"/></svg></button></div>
       <div id="props"></div>
     </section>
     <details class="sec" data-key="cables" open>
@@ -262,6 +270,7 @@
     <dt>Diagram</dt><dd>Drag a box to move it (Shift-click several to move them together); Arrange picks a standard layout. Grid, snap and round or angled links are in its bar; <kbd>F</kbd> or the fit button shows the whole diagram</dd>
     <dt><kbd>N</kbd></dt><dd>Racks and the diagram side by side; selecting in one selects in the other</dd>
     <dt><kbd>R</kbd></dt><dd>Switch between the front and rear view (power inlets are at the rear)</dd>
+    <dt>Point at a cable</dt><dd>Its label shows next to the pointer; a selected cable shows a label at each end. Properties has a setting to show every label all the time</dd>
     <dt>Drag a plug</dt><dd>Move a cable end to another port (Select tool)</dd>
     <dt><kbd>Shift</kbd> click / drag</dt><dd>Select several devices, or drag a box on empty space</dd>
     <dt><kbd>Ctrl</kbd> <kbd>C</kbd> <kbd>V</kbd> <kbd>D</kbd></dt><dd>Copy, paste into the selected rack, duplicate</dd>
@@ -326,14 +335,14 @@
 <datalist id="portCounts"><option value="4"><option value="8"><option value="12"><option value="16"><option value="24"><option value="48"></datalist>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
-<script src="js/model.js?v=45"></script>
-<script src="js/examples.js?v=45"></script>
-<script src="js/routing.js?v=45"></script>
-<script src="js/draw2d.js?v=45"></script>
-<script src="js/view3d.js?v=45"></script>
-<script src="js/export.js?v=45"></script>
-<script src="js/netdiagram.js?v=45"></script>
-<script src="js/ui.js?v=45"></script>
-<script src="js/tour.js?v=45"></script>
+<script src="js/model.js?v=49"></script>
+<script src="js/examples.js?v=49"></script>
+<script src="js/routing.js?v=49"></script>
+<script src="js/draw2d.js?v=49"></script>
+<script src="js/view3d.js?v=49"></script>
+<script src="js/export.js?v=49"></script>
+<script src="js/netdiagram.js?v=49"></script>
+<script src="js/ui.js?v=49"></script>
+<script src="js/tour.js?v=49"></script>
 </body>
 </html>

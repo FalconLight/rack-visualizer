@@ -9,11 +9,13 @@
 
 const svg = $('#svg'), stage = $('#stage'), hudEl = $('#hud'), toastEl = $('#toast');
 
+/* X maps a front-view x to what is drawn, VR a box (x, width): the rear view mirrors both */
 function viewMap(L, face) {
   const rear = face === 'rear';
   return { X: x => (rear ? L.w - x : x), VR: (x, w) => (rear ? L.w - x - w : x) };
 }
 
+/* the height ruler on the left: ticks every 10 mm (or inch), numbers when there is room at this zoom (k) */
 function rulerSVG(L, k) {
   const u = ui.unit, x = -120, H = L.h;
   const minor = u === 'in' ? IN_MM : 10, perMid = u === 'in' ? 6 : 5, perMajor = u === 'in' ? 12 : 10;
@@ -120,6 +122,8 @@ function ledsSVG(b, vx, cs, k) {
   }).join('');
 }
 
+/* every cable with an end on this face: its path, plug dots and, when asked for, labels. The live view adds the wide hit
+   area for the pointer and the end handles of the selected cable */
 function cablesSVG(L, port, o, X, VR) {
   const face = o.face, live = !!o.live, k = o.k;
   const routes = doc.settings.route === 'ortho' ? diagramRoutes(L, port, face).routes : null;
@@ -150,6 +154,8 @@ function cablesSVG(L, port, o, X, VR) {
   return s + handles;
 }
 
+/* what is drawn over the scene and follows the pointer: the cable end being moved, the cable being started, drag ghosts,
+   the hover line, the selection box, the measure, and the cable labels */
 function overlaysSVG(L, k, face, X, VR) {
   let s = '';
   const c = ui.rewire?.moved && doc.cables.find(c => c.id === ui.rewire.cid);
@@ -237,6 +243,7 @@ function overlayMarkup() {
   const L = layout(), { X, VR } = viewMap(L, ui.face);
   return overlaysSVG(L, ui.cam.k, ui.face, X, VR);
 }
+/* redraw the whole 2D view: the scene and the overlays, inside the camera group */
 function draw2D() {
   if (ui.view !== '2d') return;
   if (!doc.racks.length) { svg.innerHTML = ''; drawnK = 0; return; }
@@ -262,6 +269,7 @@ function toWorld(e) {
 /* view x ↔ front-view x (the mirror is its own inverse) */
 const frontX = (L, x) => (ui.face === 'rear' ? L.w - x : x);
 
+/* zoom and pan so every rack, with the cable lanes around it, fits between the bar at the top and the zoom controls */
 function fit() {
   const L = layout(), r = svg.getBoundingClientRect();
   if (!r.width || !r.height) return;
@@ -295,6 +303,7 @@ function centerOn(b) {
   ui.cam = { k, x: r.width / 2 - (b.x + b.w / 2) * k, y: r.height / 2 - (b.y + b.h / 2) * k };
   ui.userMoved = true;
 }
+/* the rack at a front-view x; with nearest, the closest rack when x falls between two */
 function rackAtX(L, x, nearest) {
   let best = null, bd = Infinity;
   for (const r of doc.racks) {
@@ -305,10 +314,12 @@ function rackAtX(L, x, nearest) {
   }
   return nearest ? best : null;
 }
+/* the bottom U for a device of height h whose top edge is at topY, kept inside the rack */
 function uFromTop(R, rack, topY, h) {
   return clamp(Math.round((R.railBottom - topY) / U_MM - h) + 1, 1, Math.max(1, rack.units - h + 1));
 }
 
+/* the one-line result of the connection check, for the status line */
 function checkSummary() {
   const c = ui.conn;
   if (!c) return '';
@@ -316,6 +327,7 @@ function checkSummary() {
     c.cableIssues.length && `${c.cableIssues.length} cable problem${c.cableIssues.length > 1 ? 's' : ''}`].filter(Boolean);
   return parts.length ? `Check: ${parts.join(' · ')}` : `Check: all ${c.checked} devices connected`;
 }
+/* the status line at the bottom of the drawing: a hint for the tool in use, or what is under the pointer */
 function hud() {
   let t = '';
   if (ui.view === '3d') {

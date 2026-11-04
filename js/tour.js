@@ -7,6 +7,7 @@
    ===================================================================== */
 
 const TOUR_KEY = 'rackviz.tour';
+/* the 2D elevation, which most steps talk about */
 const show2D = () => { if (ui.pane === 'net') setPane('racks'); if (ui.view !== '2d') setView('2d'); };
 /* at: the element(s) to highlight (none = a centred card) · side: where the card goes first
    enter / leave: put the screen in the state the step talks about, and back */
@@ -62,6 +63,7 @@ document.body.appendChild(tourEl);
 const tourCard = $('.tour-card', tourEl), tourSpot = $('.tour-spot', tourEl);
 let tour = null;   // { i: step, focus: what had focus before }
 
+/* open the tour on its first card */
 function startTour() {
   if (helpDlg.open) helpDlg.close();
   showMenu(false);
@@ -69,6 +71,7 @@ function startTour() {
   tourEl.hidden = false;
   showStep(0);
 }
+/* close the tour, remember it was seen and give the focus back */
 function endTour(skipped) {
   if (!tour) return;
   TOUR[tour.i]?.leave?.();
@@ -79,7 +82,9 @@ function endTour(skipped) {
   focus?.focus?.();
   if (skipped) toast('Tour closed. Take it again any time from Help (?)');
 }
+/* the elements a step highlights that are really on screen */
 const tourTargets = s => (s.at ? [].concat(s.at()) : []).filter(el => el && el.getClientRects().length && el.offsetWidth + el.offsetHeight > 0);
+/* go to a step: leave the last one, set the screen up for this one, fill in the card */
 function showStep(i) {
   if (i < 0 || i >= TOUR.length) return;
   TOUR[tour.i]?.leave?.();
@@ -148,6 +153,7 @@ document.addEventListener('keydown', e => {
   e.preventDefault();
 }, true);
 let tourRaf = 0;
+/* put the card back where it belongs after a resize or a scroll (once per frame) */
 const replaceTour = () => { if (tour && !tourRaf) tourRaf = requestAnimationFrame(() => { tourRaf = 0; placeTour(); }); };
 addEventListener('resize', replaceTour);
 addEventListener('scroll', replaceTour, true);

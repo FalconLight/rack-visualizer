@@ -100,7 +100,15 @@ const STD_LENGTHS = {
 };
 
 /* ---------- utils ---------- */
-const $ = (s, r = document) => r.querySelector(s);
+/* windows a side panel has been popped out into (see popOut in ui.js): lookups by selector must find the
+   panels there too, since an element moved to another window is no longer in this document */
+const popDocs = new Set();
+const $ = (s, r = document) => r.querySelector(s) || (r === document ? [...popDocs].reduce((f, d) => f || d.querySelector(s), null) : null);
+const $all = s => [document, ...popDocs].flatMap(d => [...d.querySelectorAll(s)]);
+/* the focused element: in this window, or in a popped-out panel that has the keyboard */
+const activeEl = () => { for (const d of popDocs) if (d.hasFocus() && d.activeElement && d.activeElement !== d.body) return d.activeElement; return document.activeElement; };
+/* small helpers. esc: every user-supplied string goes through it before it reaches HTML.
+   toDisp / fromDisp: millimetres to and from the unit shown (ui.unit); fmt: a length with its unit */
 const uid = () => Math.random().toString(36).slice(2, 9);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -118,7 +126,7 @@ const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(
 const clip = (t, n) => t.length > n ? t.slice(0, Math.max(1, n - 1)) + '…' : t;
 /* a toggle button's state, for the eye (.on) and for screen readers (aria-pressed) */
 const setOn = (b, on) => { b.classList.toggle('on', !!on); b.setAttribute('aria-pressed', String(!!on)); };
-const markOn = (sel, attr, v) => { for (const b of document.querySelectorAll(sel)) setOn(b, b.dataset[attr] === v); };
+const markOn = (sel, attr, v) => { for (const b of $all(sel)) setOn(b, b.dataset[attr] === v); };
 /* slide an open menu sideways so it stays inside a box (the window, or the pane that clips it) */
 function keepInside(menu, box = { left: 0, right: document.documentElement.clientWidth }) {
   menu.style.translate = '';
@@ -142,11 +150,14 @@ function menuKeys(btn, menu, show) {
 }
 
 /* ---------- document ---------- */
+/* an empty layout with the default settings */
 function blankDoc() { return normalize({ racks: [], cables: [] }); }
+/* a new rack; o: any of name, code, units, width, depth, channel (the side channel for arranged cables: both / left / right) */
 function makeRack(o = {}) {
   return { id: uid(), name: o.name || 'Rack', code: o.code || '', units: o.units || 42, width: o.width || 600,
     depth: o.depth || 1000, channel: o.channel || 'both', devices: [] };
 }
+/* a new device of a catalogue type; o: the fields to set (DEV_FIELDS, u, mount, name…), what is left out comes from the catalogue */
 function makeDev(type, o = {}) {
   const t = TYPES[type] || TYPES.custom;
   const d = { id: uid(), type, name: o.name || t.label, h: t.zeroU ? 0 : (o.h || t.h), u: o.u || 1,
@@ -155,7 +166,9 @@ function makeDev(type, o = {}) {
   for (const k of DEV_FIELDS) if (o[k] !== undefined && o[k] !== '') d[k] = o[k];
   return d;
 }
+/* the least a file must have to be taken as a layout */
 function validDoc(d) { return d && Array.isArray(d.racks) && Array.isArray(d.cables); }
+/* fill in what a layout may lack (older versions, other tools), add the default cable types once, then sanitize it */
 function normalize(d) {
   d.settings = { unit: 'cm', gap: 300, route: 'ortho', via: 'top', catColors: {}, labelPattern: '{rack}-U{u}-{port}',
     showLabels: false, templates: [], ...(d.settings || {}) };
@@ -313,12 +326,15 @@ function sanitize(d) {
   if (Object.keys(np).length) d.netPos = np; else delete d.netPos;
   return d;
 }
+/* the id of the first cable type of a kind (data or power) */
 const pickTypeId = (types, kind) => (types.find(t => t.kind === kind) || types[0]).id;
+/* the layout saved in this browser, or null when there is none or it cannot be read */
 function load() {
   try { const s = localStorage.getItem(STORE_KEY); if (s) { const d = JSON.parse(s); if (validDoc(d)) return normalize(d); } } catch (e) { /* ignore */ }
   return null;
 }
 let saveFailed = false;
+/* write the layout to this browser (STORE_KEY); tells the user once if the browser refuses */
 function save() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(doc)); saveFailed = false; }
   catch (e) {   // storage full or blocked: say so once, until saving works again
@@ -330,10 +346,32 @@ function save() {
 let doc = load();
 const firstVisit = !doc;   // nothing saved in this browser yet: examples.js fills in an example layout
 if (!doc) doc = blankDoc();
+/* ui: what is going on right now. It is never saved with the layout (a few fields are kept in localStorage,
+   noted below), and undo does not touch it, except the selection. Other files add: ui.net (netdiagram.js, the
+   diagram's camera and graph) and ui.panels / ui.splitAt (ui.js, the side panels and the divider). */
 const ui = {
-  view: '2d', face: 'front', mode: 'select', cableType: 'utp', sel: null, multi: new Set(), lastRack: null, example: false,
-  pending: null, pendingPort: '', drag: null, pan: null, measure: null, marquee: null, hover: null, hoverPort: null,
-  rewire: null, clip: null, cam: { x: 0, y: 0, k: 0.3 }, fitK: 0, userMoved: false,
+  /* what is showing */
+  view: '2d',            // '2d' or '3d'
+  pane: 'racks',         // what the middle shows: 'racks', 'net' (the diagram) or 'split' (both); saved in localStorage
+  face: 'front',         // the side of the racks seen in 2D
+  mode: 'select',        // the tool: 'select', 'connect' (cables) or 'measure'
+  check: false,          // check mode (outlines what is not connected); saved in localStorage
+  /* the selection: one rack, device or cable { kind, id }, or several devices in multi */
+  sel: null, multi: new Set(), shownSel: null /* the selection as last drawn, for undo */, lastRack: null /* where new devices go */,
+  /* the 2D camera: screen position and scale (pixels per mm); fitK is the scale that fits everything, and
+     userMoved says the user took over from "fit" */
+  cam: { x: 0, y: 0, k: 0.3 }, fitK: 0, userMoved: false,
+  /* a gesture in progress, each null when none: moving devices, panning, moving a cable end, the box drawn
+     with Shift, the measure tool; pending is the device (and port) a new cable starts from */
+  drag: null, pan: null, rewire: null, marquee: null, measure: null, pending: null, pendingPort: '',
+  /* under the pointer: its position in the drawing, and the port, device and cable there */
+  hover: null, hoverPort: null, hoverDev: null, hoverCable: null,
+  cableType: 'utp',      // the type of the next cable drawn
+  clip: null,            // the copied devices
+  armed: null,           // an id that was asked to be deleted once, waiting for the second press
+  example: false,        // the layout is an example (the note over the racks is showing)
+  /* recomputed on every redraw (renderAll): the power analysis and the connection check */
+  power: null, conn: null,
   get unit() { return doc.settings.unit; },
 };
 
@@ -341,12 +379,14 @@ const ui = {
 const undoStack = [], redoStack = [];
 const selNow = () => ({ sel: ui.sel && { ...ui.sel }, multi: [...ui.multi] });
 const snapshot = (s = selNow()) => ({ doc: JSON.stringify(doc), example: ui.example, ...s });
+/* remember the current state as one undo step */
 function pushUndo() {
   // the selection as last drawn: callers often pick the new selection just before mutating
   undoStack.push(snapshot(ui.shownSel || selNow()));
   if (undoStack.length > 200) undoStack.shift();
   redoStack.length = 0;
 }
+/* every edit goes through here: remember the state for undo, change, save, redraw */
 function mutate(fn) {
   pushUndo();
   fn();
@@ -355,6 +395,7 @@ function mutate(fn) {
 }
 /* display preferences aren't edits: undo and redo leave them as they are */
 const VIEW_PREFS = ['unit', 'route', 'net'];
+/* put an undo entry back, keeping the display preferences */
 function restore(e) {
   const keep = Object.fromEntries(VIEW_PREFS.map(k => [k, doc.settings[k]]));
   doc = JSON.parse(e.doc);
@@ -438,10 +479,12 @@ function devRect(L, rack, d) {
   return { x: R.px + (d.half === 'right' ? PANEL_W / 2 : 0), y: R.railBottom - (d.u + d.h - 1) * U_MM,
     w: isHalf(d) ? PANEL_W / 2 : PANEL_W, h: d.h * U_MM };
 }
+/* the rack and the device for a device id: { rack, dev }, or null */
 function findDev(id) {
   for (const rack of doc.racks) { const dev = rack.devices.find(d => d.id === id); if (dev) return { rack, dev }; }
   return null;
 }
+/* the halves of the rack width a device covers, in half-widths: left 0–1, right 1–2, full 0–2 */
 const hspan = d => d.half === 'left' ? [0, 1] : d.half === 'right' ? [1, 2] : [0, 2];
 /* why `d` can't sit where it is (or null); `ignore` skips devices that move together */
 function conflict(rack, d, ignore = null) {
@@ -466,10 +509,12 @@ function conflict(rack, d, ignore = null) {
   }
   return null;
 }
+/* the highest U where a device fits, or 0 */
 function freeSlot(rack, d) {
   for (let u = rack.units - d.h + 1; u >= 1; u--) if (!conflict(rack, { ...d, u })) return u;
   return 0;
 }
+/* the free U nearest to u0 (looking up to maxDist away, both ways), or 0 */
 function nearestFree(rack, d, u0, maxDist = rack.units, ignore = null) {
   for (let k = 0; k <= maxDist; k++)
     for (const u of k ? [u0 + k, u0 - k] : [u0]) if (u >= 1 && !conflict(rack, { ...d, u }, ignore)) return u;
@@ -483,17 +528,21 @@ function freeZeroU(rack, d) {
       if (!conflict(rack, { ...d, side, offset: off, length: len })) return { side, offset: off, length: len };
   return null;
 }
+/* the set of U numbers taken by devices (vertical PDUs take none) */
 function occupied(rack) {
   const s = new Set();
   rack.devices.forEach(d => { if (!isZeroU(d)) for (let i = 0; i < d.h; i++) s.add(d.u + i); });
   return s;
 }
+/* how many U of a rack are taken */
 function usedU(rack) { return [...occupied(rack)].filter(u => u >= 1 && u <= rack.units).length; }
+/* the longest run of free U in a rack */
 function largestFree(rack) {
   const occ = occupied(rack); let best = 0, cur = 0;
   for (let u = 1; u <= rack.units; u++) { if (occ.has(u)) cur = 0; else best = Math.max(best, ++cur); }
   return best;
 }
+/* what is wrong with a device's place (it doesn't fit, or is deeper than the rack), or null */
 function devWarn(rack, d) {
   return conflict(rack, d)
     || (!isZeroU(d) && d.depth > usableDepth(rack) ? `Deeper than the rack's usable depth (${fmt(usableDepth(rack))})` : null);
@@ -503,7 +552,9 @@ const rackWeight = r => r.devices.reduce((s, d) => s + weight(d), 0);
 /* ---------- ports ----------
    keys: p# data port · u# uplink · i# power inlet · o# power outlet */
 const portKind = k => (k && (k[0] === 'i' || k[0] === 'o') ? 'power' : 'data');
+/* how many ports of a class a device has */
 function portCount(d, c) { return c === 'p' ? nPorts(d) : c === 'u' ? nUplinks(d) : c === 'i' ? nInlets(d) : nOutlets(d); }
+/* does the device have this port? */
 const validPort = (d, k) => { const n = +k.slice(1); return n >= 1 && n <= portCount(d, k[0]); };
 /* which face of the rack a port is on */
 function portSide(d, k) {
@@ -521,6 +572,7 @@ function portConnector(d, k) {
     default: return outletType(d);
   }
 }
+/* the connector of a port by name, e.g. "SFP+ 10G" or "C14 inlet" */
 function connName(d, k) {
   switch (k[0]) {
     case 'p': return DATA_CONN[portConn(d)] || portConn(d);
@@ -529,6 +581,7 @@ function connName(d, k) {
     default: return OUTLET_NAME[outletType(d)] + ' outlet';
   }
 }
+/* a port in words, e.g. "Port 3 (LC)" or "Uplink 2 · SFP+ 10G" */
 function portLabel(d, k) {
   const n = k.slice(1);
   switch (k[0]) {
@@ -538,8 +591,11 @@ function portLabel(d, k) {
     default: return `Outlet ${n} (${OUTLET_NAME[outletType(d)]})`;
   }
 }
+/* a port as it appears in labels: P3, UL2, PSU1, O4 */
 const portShort = k => ({ p: 'P', u: 'UL', i: 'PSU', o: 'O' }[k[0]] || '') + k.slice(1);
+/* portShort with a space in front, or nothing when there is no port */
 const fmtPort = k => (k ? ' ' + portShort(k) : '');
+/* a port in lower case, without its connector, for sentences: "port 3", "uplink 2" */
 const portName = (d, k) => portLabel(d, k).replace(/ \(.*\)$/, '').toLowerCase();
 
 /* how the ports of a horizontal device are laid out on its faces */
@@ -560,6 +616,7 @@ function portGrid(d) {
   return { w, x0, maxRows, ur, upCols, rows, ox0, orows, maxData: dCols * maxRows, maxOut: oCols * maxRows,
     fits: n <= dCols * maxRows && nO <= oCols * maxRows };
 }
+/* do a vertical PDU's outlets fit along its length at the minimum spacing? */
 function zeroUFits(d) {
   const len = zLen(d), n = nOutlets(d);
   return n <= 1 || (len - 40 - 2 * PITCH - PORT) / (n - 1) >= PITCH;
@@ -589,6 +646,7 @@ function portLayout(L, rack, d) {
   for (let j = 0; j < nI; j++) place('i' + (j + 1), back, g.w - PORTS_PAD - PORT - (nI - 1 - j) * (PORT + 8), iy, { power: true });
   return out;
 }
+/* the cable plugged into each port: { deviceId: { portKey: cable } } */
 function portUse() {
   const m = {};
   for (const c of doc.cables) {
@@ -622,6 +680,7 @@ function ensurePorts() {
 
 /* ---------- cable types & compatibility ---------- */
 const ctype = id => doc.settings.cableTypes.find(t => t.id === id) || { id, name: id, color: '#888888', kind: 'data' };
+/* the colour a cable is drawn in: its own, else its type's */
 const cableColor = c => c.color || ctype(c.type).color;
 /* problems with a cable (or null) */
 function cableCheck(c) {
@@ -653,6 +712,7 @@ function rackCode(r) {
   const parts = r.name.trim().split(/\s+/);
   return /^rack$/i.test(parts[0]) && parts.length > 1 ? parts.slice(1).join('') : parts.map(p => p[0]).join('').toUpperCase();
 }
+/* the label at one end of a cable, from the pattern in the settings ({rack} {u} {port} {device}) */
 function endLabel(devId, key) {
   const f = findDev(devId); if (!f) return '?';
   const u = isZeroU(f.dev) ? 'V' + (f.dev.side === 'right' ? 'R' : 'L') : f.dev.u;
@@ -660,7 +720,9 @@ function endLabel(devId, key) {
   const tokens = { rack: rackCode(f.rack), u, port: portShort(key || ''), device: f.dev.name };
   return (doc.settings.labelPattern || '{rack}-U{u}-{port}').replace(/\{(rack|u|port|device)\}/g, (_, t) => tokens[t]);
 }
+/* both ends together, e.g. "A-U41-P1 ↔ B-U12-UL2" */
 const autoLabel = c => `${endLabel(c.a, c.pa)} ↔ ${endLabel(c.b, c.pb)}`;
+/* what a cable is called: the label typed in Properties, else the automatic one */
 const cableLabel = c => c.label || autoLabel(c);
 
 /* ---------- standard lengths ---------- */
@@ -668,6 +730,7 @@ function stdLength(mm, kind = 'data') {
   const list = STD_LENGTHS[ui.unit === 'in' ? 'imperial' : 'metric'][kind === 'power' ? 'power' : 'data'];
   return list.find(x => x >= mm - 1) ?? null;
 }
+/* a stock length for display: feet when the unit is inches, else metres */
 const fmtStd = mm => (ui.unit === 'in' ? `${Math.round(mm / 304.8)} ft` : `${+(mm / 1000).toFixed(2)} m`);
 
 /* ---------- power ----------
@@ -716,10 +779,11 @@ function powerModel() {
     seen.add(id);
     return feedOf(fs[0].src, seen);
   }
+  const use = portUse();
   const sources = Object.values(devs).filter(({ dev }) => nOutlets(dev) > 0).map(({ rack, dev }) => ({
     rack, dev, cap: capacity(dev),
     normal: load(dev.id) - watts(dev), worst: worstLoad(dev.id),
-    used: Object.keys(portUse()[dev.id] || {}).filter(k => k[0] === 'o').length,
+    used: Object.keys(use[dev.id] || {}).filter(k => k[0] === 'o').length,
   }));
   const warnings = [], unpowered = [];
   for (const s of sources) {

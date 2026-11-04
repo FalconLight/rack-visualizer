@@ -15,6 +15,7 @@ const LAYER_ORDER = ['Title', 'Floor', 'Ruler', 'Racks', 'Rack units', 'Devices 
   '*cables', 'Labels', 'Cable labels', 'Other', 'Data diagram', 'Power diagram'];
 const NET_LAYER = { data: 'Data diagram', power: 'Power diagram' };
 
+/* hand a file to the browser as a download */
 function download(blob, name) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -43,6 +44,7 @@ function diagramPrims(layer, N) {
   document.body.appendChild(host);
   try { return collectPrims(host, NET_LAYER[layer]); } finally { host.remove(); }
 }
+/* the layer a drawn element goes on (null: leave it out, like the invisible hit areas) */
 function layerOf(el, layer0) {
   const c = el.classList, up = s => el.closest(s);
   if (c.contains('cable-hit') || c.contains('end-handle') || c.contains('nl-hit')) return null;
@@ -69,6 +71,7 @@ function paint(v, op) {
   if (al < 0.02) return null;
   return [r, g, b].map(x => Math.round(x * al + 255 * (1 - al)));
 }
+/* the segments of an SVG path; only M L C Q Z are read, which is all the drawing uses (Q becomes C) */
 function parsePath(d) {
   const toks = d.match(/[MLCQZ]|-?\d*\.?\d+(?:e[-+]?\d+)?/gi) || [];
   const out = [];
@@ -87,6 +90,7 @@ function parsePath(d) {
   }
   return out;
 }
+/* any drawn shape as path segments */
 function toSegs(el) {
   const n = a => +el.getAttribute(a) || 0;
   switch (el.tagName) {
@@ -121,9 +125,10 @@ function collectPrims(root, layer0 = null) {
     if (el.tagName === 'text') {
       const [x, y] = pt(+el.getAttribute('x') || 0, +el.getAttribute('y') || 0);
       const text = cs.textTransform === 'uppercase' ? el.textContent.toUpperCase() : el.textContent;
+      // rot: the turn of a rotated label (the vertical cable labels), in radians, from its own transform
       if (fill && text.trim()) prims.push({ layer, t: 'text', x, y, text,
         size: parseFloat(cs.fontSize) * (moved ? Math.hypot(m.a, m.b) : 1), bold: parseInt(cs.fontWeight, 10) >= 600,
-        anchor: cs.textAnchor, central: cs.dominantBaseline === 'central', fill });
+        anchor: cs.textAnchor, central: cs.dominantBaseline === 'central', rot: moved ? Math.atan2(m.b, m.a) : 0, fill });
       continue;
     }
     const sw = parseFloat(cs.strokeWidth) || 0, stroke = sw ? paint(cs.stroke, op) : null;
@@ -136,21 +141,26 @@ function collectPrims(root, layer0 = null) {
   return prims;
 }
 const measureCtx = document.createElement('canvas').getContext('2d');
+/* how wide a text is in Helvetica (measured on a canvas), for anchoring and bounds */
 function textWidth(text, size, bold) {
   measureCtx.font = `${bold ? 'bold ' : ''}100px Helvetica, Arial, sans-serif`;
   return measureCtx.measureText(text).width / 100 * size;
 }
+/* the box around a set of primitives; a rotated text is measured turned about its anchor */
 function primBounds(prims) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   const add = (x, y) => { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; };
   for (const p of prims) {
     if (p.t === 'text') {
-      const w = textWidth(p.text, p.size, p.bold), x = p.anchor === 'middle' ? p.x - w / 2 : p.anchor === 'end' ? p.x - w : p.x;
-      add(x, p.y - p.size); add(x + w, p.y + p.size * 0.4);
+      const w = textWidth(p.text, p.size, p.bold), x0 = p.anchor === 'middle' ? -w / 2 : p.anchor === 'end' ? -w : 0;
+      const c = Math.cos(p.rot || 0), s = Math.sin(p.rot || 0);
+      for (const [dx, dy] of [[x0, -p.size], [x0 + w, -p.size], [x0, p.size * 0.4], [x0 + w, p.size * 0.4]])
+        add(p.x + dx * c - dy * s, p.y + dx * s + dy * c);   // the four corners of the text box, turned about its anchor
     } else for (const s of p.segs) for (let i = 1; i + 1 < s.length; i += 2) add(s[i], s[i + 1]);
   }
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
+/* the layer names in drawing order: LAYER_ORDER first, any other cable layers with the cables, the rest after */
 function orderLayers(prims) {
   const rank = l => { const i = LAYER_ORDER.indexOf(l); return i >= 0 ? i : /cables/i.test(l) ? LAYER_ORDER.indexOf('*cables') : LAYER_ORDER.length; };
   return [...new Set(prims.map(p => p.layer))].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
@@ -192,10 +202,12 @@ function buildDrawing(opts, N) {
   const bb = primBounds(prims), m = 10 * N;   // 10 mm paper margin
   return { prims, bb: { x: bb.x - m, y: bb.y - m, w: bb.w + 2 * m, h: bb.h + 2 * m }, missing };
 }
+/* a primitive scaled about the origin by f */
 function scalePrim(p, f) {
   if (p.t === 'text') return { ...p, x: p.x * f, y: p.y * f, size: p.size * f };
   return { ...p, segs: p.segs.map(s => s.map((v, i) => (i === 0 ? v : v * f))) };
 }
+/* a primitive moved by dx, dy */
 function shiftPrim(p, dx, dy) {
   if (p.t === 'text') return { ...p, x: p.x + dx, y: p.y + dy };
   return { ...p, segs: p.segs.map(s => s.map((v, i) => (i === 0 ? v : v + (i % 2 ? dx : dy)))) };
@@ -203,9 +215,11 @@ function shiftPrim(p, dx, dy) {
 
 /* ---------- writers ---------- */
 const f3 = v => +(+v).toFixed(3);
+/* path segments as an SVG path string */
 function segsToD(segs) {
   return segs.map(s => s[0] === 'Z' ? 'Z' : s[0] + s.slice(1).map(v => f3(v)).join(' ')).join(' ');
 }
+/* the SVG file: one Inkscape-style layer per layer name, sizes in millimetres; bg adds a white page */
 function primsToSVG(prims, bb, N, bg) {
   const col = c => (c ? `rgb(${c.join(',')})` : 'none');
   const k = PX_MM * N;
@@ -220,7 +234,7 @@ function primsToSVG(prims, bb, N, bg) {
       if (p.t === 'text') {
         const y = p.central ? p.y + p.size * 0.35 : p.y;
         s += `<text x="${f3(p.x)}" y="${f3(y)}" font-family="Helvetica, Arial, sans-serif" font-size="${f3(p.size)}"${p.bold ? ' font-weight="bold"' : ''}`
-          + `${p.anchor && p.anchor !== 'start' ? ` text-anchor="${p.anchor}"` : ''} fill="${col(p.fill)}">${esc(p.text)}</text>\n`;
+          + `${p.anchor && p.anchor !== 'start' ? ` text-anchor="${p.anchor}"` : ''}${p.rot ? ` transform="rotate(${f3(p.rot * 180 / Math.PI)} ${f3(p.x)} ${f3(y)})"` : ''} fill="${col(p.fill)}">${esc(p.text)}</text>\n`;
       } else {
         s += `<path d="${segsToD(p.segs)}" fill="${col(p.fill)}"`
           + (p.stroke ? ` stroke="${col(p.stroke)}" stroke-width="${f3(p.sw * k)}" stroke-linecap="round" stroke-linejoin="round"` : '')
@@ -246,6 +260,8 @@ function pdfStr(str) {
   }
   return '(' + out + ')';
 }
+/* the PDF file, written by hand: one page, one optional-content group per layer, Helvetica text. bb is the page in
+   drawing units and N the scale, so 1 drawing unit is 1 / N of a millimetre on paper */
 function primsToPDF(prims, bb, N) {
   const s = 72 / 25.4 / N, W = bb.w * s, H = bb.h * s, k = PX_MM * N;
   const rgb = c => c.map(v => f3(v / 255)).join(' ');
@@ -257,9 +273,10 @@ function primsToPDF(prims, bb, N) {
       if (p.layer !== L) continue;
       if (p.t === 'text') {
         const w = textWidth(p.text, p.size, p.bold);
-        const x = p.anchor === 'middle' ? p.x - w / 2 : p.anchor === 'end' ? p.x - w : p.x;
-        const y = p.central ? p.y + p.size * 0.35 : p.y;
-        content += `${rgb(p.fill)} rg BT /${p.bold ? 'F2' : 'F1'} ${f3(p.size)} Tf 1 0 0 -1 ${f3(x)} ${f3(y)} Tm ${pdfStr(p.text)} Tj ET\n`;
+        // the anchor shifts the start along the text's own direction; the text matrix turns it (and un-flips the page's y)
+        const c = Math.cos(p.rot || 0), s = Math.sin(p.rot || 0), shift = p.anchor === 'middle' ? -w / 2 : p.anchor === 'end' ? -w : 0;
+        const x = p.x + shift * c, y = p.y + shift * s + (p.central ? p.size * 0.35 : 0);
+        content += `${rgb(p.fill)} rg BT /${p.bold ? 'F2' : 'F1'} ${f3(p.size)} Tf ${f3(c)} ${f3(s)} ${f3(s)} ${f3(-c)} ${f3(x)} ${f3(y)} Tm ${pdfStr(p.text)} Tj ET\n`;
         continue;
       }
       let o = '';
@@ -295,6 +312,7 @@ function primsToPDF(prims, bb, N) {
   out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R /Info ${objs.length} 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return new Blob([Uint8Array.from(out, ch => ch.charCodeAt(0) & 255)], { type: 'application/pdf' });
 }
+/* draw the SVG on a white canvas of the given width and give back a PNG */
 async function svgToPng(svgText, bb, width) {
   const url = URL.createObjectURL(new Blob([svgText], { type: 'image/svg+xml' }));
   try {
@@ -316,12 +334,14 @@ async function svgToPng(svgText, bb, width) {
 
 /* ---------- export dialog ---------- */
 const exportDlg = $('#exportDlg'), exportForm = $('#exportForm');
+/* open the export dialog on the view that is showing */
 function openExport() {
   if (!doc.racks.length) return toast('Add a rack first');
   exportForm.face.value = ui.face;
   syncExportForm();
   exportDlg.showModal();
 }
+/* show the scale for PDF and SVG, or the image width for PNG */
 function syncExportForm() {
   const png = exportForm.format.value === 'png';
   exportForm.querySelector('[data-for="vector"]').hidden = png;

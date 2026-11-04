@@ -8,6 +8,7 @@
 const propsEl = $('#props'), rackListEl = $('#rackList'), cableListEl = $('#cableList'), cableSumEl = $('#cableSum'), powerEl = $('#powerPanel');
 
 let toastTimer;
+/* a short message at the bottom of the screen */
 function toast(msg) {
   toastEl.textContent = msg; toastEl.hidden = false;
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (toastEl.hidden = true), 2800);
@@ -22,6 +23,7 @@ function patchHTML(el, html) {
   patchTpl.innerHTML = html;
   patchChildren(el, patchTpl.content);
 }
+/* can this node be updated in place? Same kind, and for elements the same data-id and input type */
 const sameNode = (a, b) => a.nodeType === b.nodeType && a.nodeName === b.nodeName
   && (a.nodeType !== 1 || (a.getAttribute('data-id') === b.getAttribute('data-id') && a.getAttribute('type') === b.getAttribute('type')));
 function patchChildren(cur, next) {
@@ -52,6 +54,7 @@ function patchEl(o, n) {
 
 /* ---------- colors ---------- */
 const devColor = d => d.color || cssVar('--k-' + T_(d).cat);
+/* equipment colours chosen in the style editor override the CSS defaults */
 function applyCatColors() {
   const st = document.documentElement.style;
   for (const [k] of CATS) {
@@ -64,9 +67,10 @@ function applyCatColors() {
 const isSel = (kind, id) => ui.sel?.kind === kind && ui.sel.id === id;
 /* a field still being edited in Properties belongs to what is selected now: save it before that changes */
 function commitEdit() {
-  const a = document.activeElement;
+  const a = activeEl();
   if (a && propsEl.contains(a) && /INPUT|SELECT|TEXTAREA/.test(a.tagName)) a.blur();   // fires its change event
 }
+/* select a rack, a device or a cable (or nothing), and redraw */
 function select(kind, id) {
   commitEdit();
   ui.sel = kind ? { kind, id } : null;
@@ -75,13 +79,16 @@ function select(kind, id) {
   if (kind === 'device') ui.lastRack = findDev(id)?.rack.id;
   renderAll();
 }
+/* the ids of the selected devices: the multi-selection, else the one selected device */
 const selectedDevIds = () => (ui.multi.size ? [...ui.multi] : ui.sel?.kind === 'device' ? [ui.sel.id] : []);
+/* make these devices the selection (one device is a plain selection) */
 function setMulti(ids) {
   commitEdit();
   ui.multi = new Set(ids);
   if (ui.multi.size === 1) { ui.sel = { kind: 'device', id: ids[0] }; ui.multi.clear(); }
   else ui.sel = ui.multi.size ? { kind: 'device', id: [...ui.multi][0] } : null;
 }
+/* Shift-click: add a device to the selection or remove it */
 function toggleMulti(id) {
   commitEdit();
   const cur = new Set(selectedDevIds());
@@ -90,9 +97,11 @@ function toggleMulti(id) {
   if (ui.sel) ui.lastRack = findDev(ui.sel.id)?.rack.id;
   renderAll();
 }
+/* where new devices go: the rack last used, else the first one */
 function targetRack() {
   return doc.racks.find(r => r.id === ui.lastRack) || doc.racks[0] || null;
 }
+/* add a device of a catalogue type to a rack: at U if given (the nearest place where it fits), else the first free slot; fields: values to set */
 function addDevice(type, rack = targetRack(), u = null, fields = {}) {
   if (!rack) return toast('Add a rack first');
   const d = makeDev(type, fields);
@@ -131,6 +140,7 @@ function applyMoves(targets) {
   });
   ui.lastRack = targets[0].rackId;
 }
+/* move a device to another rack, to the nearest free place */
 function moveToRack(id, rackId) {
   const f = findDev(id), to = doc.racks.find(r => r.id === rackId);
   if (!f || !to) return;
@@ -153,6 +163,7 @@ function autoPort(id) {
     && (!ka || (portKind(k) === portKind(ka) && (portKind(k) !== 'power' || k[0] !== ka[0]))));
   return keys.find(k => shown.has(k)) || keys[0] || '';
 }
+/* a click with the Cable tool: the first click starts a cable, the second finishes it (checks the pair, picks the cable type) */
 function connectClick(id, port = '') {
   const dv = findDev(id).dev;
   const total = nPorts(dv) + nUplinks(dv) + nInlets(dv) + nOutlets(dv);
@@ -195,6 +206,7 @@ function runPairs(c, max = 96) {
   }
   return out;
 }
+/* add n more cables like c on the following port pairs */
 function continueRun(c, n) {
   const pairs = runPairs(c, n);
   if (!pairs.length) return toast('The next ports are taken or don’t exist');
@@ -220,7 +232,9 @@ function shiftDevs(ids, dir) {
   toast(dir > 0 ? 'No free space above' : 'No free space below');
 }
 let armTimer;
+/* remember for 3 seconds that a delete was asked for once (a rack with equipment in it asks twice) */
 function arm(id) { ui.armed = id; clearTimeout(armTimer); armTimer = setTimeout(() => (ui.armed = null), 3000); }
+/* delete devices and the cables plugged into them */
 function deleteDevices(ids) {
   const set = new Set(ids);
   mutate(() => {
@@ -228,6 +242,7 @@ function deleteDevices(ids) {
     doc.cables = doc.cables.filter(c => !set.has(c.a) && !set.has(c.b));
   });
 }
+/* delete what is selected; a rack with devices in it asks twice unless forced */
 function deleteSel(force = false) {
   const s = ui.sel; if (!s) return;
   if (ui.multi.size > 1 || s.kind === 'device') {
@@ -279,17 +294,20 @@ function placeCopies(pairs) {   // pairs: [{ src, rack }]
   });
   toast(`${added.length ? `Added ${added.length} device${added.length > 1 ? 's' : ''}` : 'Nothing added'}${skipped ? `, ${skipped} didn't fit` : ''}`);
 }
+/* paste the copied devices into the selected rack */
 function pasteClip() {
   const rack = targetRack();
   if (!ui.clip?.length) return toast('Nothing to paste. Copy devices with Ctrl+C first');
   if (!rack) return toast('Add a rack first');
   placeCopies(ui.clip.map(src => ({ src, rack })));
 }
+/* put a copy of each selected device in its own rack, at the nearest free place */
 function duplicateSel() {
   const ids = selectedDevIds();
   if (!ids.length) return toast('Select devices to duplicate');
   placeCopies(ids.map(findDev).map(f => ({ src: f.dev, rack: f.rack })));
 }
+/* keep a device's settings (not its network details) as a template in the equipment list */
 function saveTemplate(dev) {
   const fields = { h: dev.h, depth: dev.depth, mount: dev.mount };
   if (isZeroU(dev)) fields.length = dev.length;
@@ -299,6 +317,7 @@ function saveTemplate(dev) {
   toast(`Saved “${dev.name}” as a template in the equipment list`);
 }
 
+/* make the toolbar and the bar over the racks match the state */
 function syncToolbar() {
   const two = ui.view === '2d' && ui.pane !== 'net';
   $('#viewBar').hidden = !two;   // front / rear and how cables are drawn: options of the 2D view, shown on it
@@ -313,12 +332,14 @@ function syncToolbar() {
   markOn('#routeSeg button', 'route', doc.settings.route);
   markOn('#modeSeg button', 'mode', ui.mode);
 }
+/* switch tool: select, connect (the Cable tool) or measure */
 function setMode(m) {
   ui.mode = m; ui.pending = null;
   if (m !== 'measure') ui.measure = null;
   syncToolbar();
   renderStage();
 }
+/* switch between the 2D and the 3D view */
 function setView(v) {
   ui.view = v;
   svg.toggleAttribute('hidden', v !== '2d');
@@ -334,7 +355,7 @@ try { const p = JSON.parse(localStorage.getItem('rackviz.panels') || '{}'); for 
 function setPanel(side, open) {
   ui.panels[side] = open;
   mainEl.classList.toggle('no-' + side, !open);
-  for (const b of document.querySelectorAll(`[data-panel="${side}"]`)) {
+  for (const b of $all(`[data-panel="${side}"]`)) {
     b.setAttribute('aria-expanded', open);
     if (b.classList.contains('edge-tab')) { b.title = (open ? 'Hide the ' : 'Show the ') + PANEL_NAME[side]; b.setAttribute('aria-label', b.title); }
   }
@@ -343,6 +364,73 @@ function setPanel(side, open) {
 document.addEventListener('click', e => { const b = e.target.closest('[data-panel]'); if (b) setPanel(b.dataset.panel, !ui.panels[b.dataset.panel]); });
 setPanel('left', ui.panels.left);
 setPanel('right', ui.panels.right);
+
+/* ---------- pop a side panel or a drawing out into its own window (for a second screen) ----------
+   The panel (or the rack drawing, or the diagram) itself moves, with everything wired to it, so it keeps working as before; a comment node
+   marks its place in the page. Closing the window (or the button in the panel) puts it back. */
+const POP = { left: { id: '#leftPanel', title: 'Racks & equipment', w: 340 }, right: { id: '#rightPanel', title: 'Properties & panels', w: 440 },
+  stage: { id: '#stage', title: 'Racks', w: 1000, view: true }, net: { id: '#netPane', title: 'Diagram', w: 1000, view: true } };
+const popped = {};   // side -> { win, mark, off }
+function popOut(side) {
+  if (popped[side]) return popped[side].win.focus();
+  const el = $(POP[side].id), h = Math.min(screen.availHeight - 60, POP[side].view ? 780 : 920);
+  const x = side === 'left' ? window.screenX - POP[side].w + 20 : window.screenX + window.outerWidth - 20;
+  const win = window.open('', 'rackviz-' + side, `popup=yes,width=${POP[side].w},height=${h},left=${Math.max(0, x)},top=${Math.max(0, window.screenY)}`);
+  if (!win) return toast('The browser blocked the new window. Allow pop-ups for this page, then try again.');
+  const pd = win.document;
+  pd.open();
+  pd.write(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${esc(POP[side].title)} · Rack Visualizer</title></head><body class="popout"></body></html>`);
+  pd.close();
+  for (const s of document.querySelectorAll('link[rel="stylesheet"], style')) {   // same look: copy the styles (links made absolute)
+    const c = s.cloneNode(true); if (s.href) c.href = s.href; pd.head.appendChild(c);
+  }
+  const sprite = document.querySelector('svg defs')?.parentNode; if (sprite) pd.body.appendChild(sprite.cloneNode(true));   // the icons
+  const mirror = () => {   // theme and chosen colours follow the main window
+    const a = document.documentElement, b = pd.documentElement;
+    for (const n of [...b.attributes]) if (n.name !== 'lang') b.removeAttribute(n.name);
+    for (const n of a.attributes) b.setAttribute(n.name, n.value);
+  };
+  mirror();
+  const off = new MutationObserver(mirror); off.observe(document.documentElement, { attributes: true });
+  const mark = document.createComment('panel ' + side);
+  el.replaceWith(mark);
+  pd.body.appendChild(el);
+  popped[side] = { win, mark, off };
+  popDocs.add(pd);
+  pd.addEventListener('keydown', onKey);
+  pd.addEventListener('click', e => {
+    const b = e.target.closest('[data-pop]'); if (b) popIn(b.dataset.pop);
+    if (!arrangeMenu.hidden && !e.target.closest('#netArrangeWrap')) showArrange(false);   // the diagram's menu closes on an outside click
+  });
+  win.addEventListener('pagehide', () => popIn(side));
+  if (POP[side].view) { if (!ui.paneBefore) ui.paneBefore = ui.pane; setPane(ui.pane); }   // the other drawing takes the main window
+  else mainEl.classList.add('out-' + side);
+  syncPop(side);
+}
+/* bring a popped-out panel back into the page */
+function popIn(side) {
+  const p = popped[side]; if (!p) return;
+  delete popped[side];
+  p.off.disconnect();
+  const el = $(POP[side].id), pd = p.win.document;
+  popDocs.delete(pd);
+  if (el && p.mark.parentNode) p.mark.replaceWith(el);
+  mainEl.classList.remove('out-' + side);
+  if (POP[side].view && !popped.stage && !popped.net) { const b = ui.paneBefore; ui.paneBefore = null; setPane(b || ui.pane); }
+  else if (POP[side].view) setPane(ui.pane);
+  try { if (!p.win.closed) p.win.close(); } catch (e) { /* ignore */ }
+  syncPop(side);
+}
+/* the pop-out button says which way it goes */
+function syncPop(side) {
+  const on = !!popped[side];
+  for (const b of $all(`[data-pop="${side}"]`)) {
+    const what = POP[side].view ? 'drawing' : 'panel', t = on ? `Put this ${what} back in the main window` : `Open this ${what} in its own window (for a second screen)`;
+    b.title = t; b.setAttribute('aria-label', t); b.querySelector('use')?.setAttribute('href', on ? '#i-popin' : '#i-popout');
+  }
+}
+document.addEventListener('click', e => { const b = e.target.closest('[data-pop]'); if (b) popped[b.dataset.pop] ? popIn(b.dataset.pop) : popOut(b.dataset.pop); });
+window.addEventListener('pagehide', () => { for (const s of Object.keys(popped)) try { popped[s].win.close(); } catch (e) { /* ignore */ } });   // the main page closing takes them along
 /* double-click (or double-tap, or Enter) anything to see its properties: opens the right panel at the top.
    The first click has already selected what was clicked, so that is what opens. Detected by hand: the
    views redraw on that first click, and the browser drops its own dblclick when the element under the
@@ -373,17 +461,19 @@ onDoubleClick(rackListEl, openDetails);
 /* what the middle of the screen shows: the racks, the network diagram, or both side by side */
 const viewsEl = $('#views');
 function setPane(p) {
+  const out = !!(popped.stage || popped.net);   // a drawing in its own window: both exist, one in each window
+  if (out) p = 'split'; else try { localStorage.setItem('rackviz.pane', p); } catch (e) { /* ignore */ }
   ui.pane = p;
-  try { localStorage.setItem('rackviz.pane', p); } catch (e) { /* ignore */ }
-  viewsEl.classList.toggle('split', p === 'split');
+  viewsEl.classList.toggle('split', p === 'split' && !out);
   stage.hidden = p === 'net';
   netPane.hidden = p === 'racks';
-  $('#splitter').hidden = p !== 'split';
+  $('#splitter').hidden = p !== 'split' || out;
   syncToolbar();
   if (p !== 'net') setView(ui.view);   // also starts the 3D view if that is the one showing
   if (p !== 'racks') { ui.net.userMoved = false; drawNet(); }
   hud();
 }
+/* where the divider between the racks and the diagram sits, as a share of the width (20–80 %) */
 function setSplit(r) {
   ui.splitAt = clamp(r, 0.2, 0.8);
   viewsEl.style.setProperty('--split', ui.splitAt * 100 + '%');
@@ -412,6 +502,7 @@ splitterEl.addEventListener('keydown', e => {
   setSplit(ui.splitAt + d);
   try { localStorage.setItem('rackviz.splitAt', ui.splitAt); } catch (err) { /* ignore */ }
 });
+/* switch between the front and the rear view */
 function setFace(f) {
   ui.face = f; ui.pending = null; ui.measure = null;
   cancelRewire();
@@ -424,6 +515,7 @@ svg.addEventListener('contextmenu', e => e.preventDefault());
 function capture(e) { try { svg.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ } }
 const touches = new Map();
 let pinch = null;
+/* the distance between two touches and their middle, for pinch zoom */
 function touchInfo() {
   const [a, b] = [...touches.values()], r = svg.getBoundingClientRect();
   return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2 - r.left, my: (a.y + b.y) / 2 - r.top };
@@ -589,10 +681,12 @@ function rewireTarget(e) {
     : busy && busy !== c ? `${d.name} ${portName(d, key)} is already in use` : null;
   return { dev, key, err };
 }
+/* stop moving a cable end */
 function cancelRewire() {
   ui.rewire = null;
   stage.classList.remove('rewiring');
 }
+/* released while moving a cable end: plug it into the port under it, or just select the cable after a plain click */
 function finishRewire() {
   const r = ui.rewire;
   cancelRewire();
@@ -607,6 +701,7 @@ function finishRewire() {
   }
   renderAll();
 }
+/* the box dragged with Shift selects the devices it touches */
 function finishMarquee() {
   const { a, b, add, sx, sy } = ui.marquee, L = layout();
   ui.marquee = null;
@@ -621,6 +716,7 @@ function finishMarquee() {
   renderAll();
   if (hits.length > 1) toast(`${ui.multi.size} devices selected`);
 }
+/* the pointer was released or cancelled: finish whatever was going on (move, rewire, box, pan) */
 function endPointer(e) {
   touches.delete(e?.pointerId);
   if (pinch) { if (touches.size < 2) pinch = null; ui.pan = null; return; }
@@ -639,6 +735,7 @@ function endPointer(e) {
 svg.addEventListener('pointerup', endPointer);
 svg.addEventListener('pointercancel', endPointer);
 svg.addEventListener('pointerleave', () => { if (!ui.drag && !ui.pan && !ui.rewire && !ui.marquee) { ui.hover = ui.hoverDev = ui.hoverPort = ui.hoverCable = null; schedule(true); } });
+/* zoom about a point of the drawing (pixels) */
 function zoomAt(mx, my, factor) {
   const k = ui.cam.k, k2 = clamp(k * factor, 0.03, 8);
   ui.cam.x = mx - (mx - ui.cam.x) * k2 / k;
@@ -647,6 +744,7 @@ function zoomAt(mx, my, factor) {
   ui.userMoved = true;
   schedule();
 }
+/* zoom about the middle of the drawing, or move the 3D camera towards its target */
 function zoomBy(factor) {
   if (ui.view === '3d') {
     if (!T.ready) return;
@@ -754,6 +852,7 @@ rackListEl.addEventListener('dragend', () => {
   rackListEl.querySelector('.dragging')?.classList.remove('dragging');
 });
 
+/* the cable list, with lengths and the stock cords to buy */
 function renderCableList() {
   const name = id => esc(findDev(id)?.dev.name ?? '?');
   $('#cableCount').textContent = doc.cables.length || '';
@@ -786,6 +885,7 @@ function renderCableList() {
 cableListEl.addEventListener('click', e => { const it = e.target.closest('[data-id]'); if (it) select('cable', it.dataset.id); });
 listboxKeys(cableListEl, opt => select('cable', opt.dataset.id));
 
+/* racks (watts, BTU/h, weight), power sources with their load, and the warnings */
 function renderPowerPanel() {
   const pm = ui.power;
   const meter = (v, max) => { const pct = max ? Math.min(100, v / max * 100) : 0; return `<div class="meter"><i class="${pct > 100 * 0.999 ? 'over' : pct >= 80 ? 'full' : ''}" style="width:${pct}%"></i></div>`; };
@@ -811,6 +911,7 @@ powerEl.addEventListener('click', e => {
 
 /* ---------- connection check ---------- */
 const checkEl = $('#checkPanel'), checkBtn = $('#checkBtn');
+/* the connection check: what is not connected, and the warning dot on the toolbar */
 function renderCheckPanel() {
   const c = ui.conn, n = c.problems.length + c.cableIssues.length;
   $('#checkCount').textContent = n ? '⚠ ' + n : '';
@@ -841,6 +942,7 @@ checkEl.addEventListener('click', e => {
   if (d) focusItem({ kind: 'device', id: d.dataset.dev });
   else if (cb) focusItem({ kind: 'cable', id: cb.dataset.cable });
 });
+/* turn check mode on or off (remembered in this browser) */
 function setCheck(on) {
   ui.check = on;
   try { localStorage.setItem('rackviz.check', on ? '1' : '0'); } catch (e) { /* ignore */ }
@@ -854,6 +956,7 @@ checkBtn.addEventListener('click', () => setCheck(!ui.check));
 try { ui.check = localStorage.getItem('rackviz.check') === '1'; } catch (e) { /* ignore */ }
 
 /* ---------- properties ---------- */
+/* <option> lists for the Properties forms; opt marks the one equal to cur as selected */
 const opt = (v, label, cur) => `<option value="${esc(v)}"${String(v) === String(cur ?? '') ? ' selected' : ''}>${esc(label)}</option>`;
 const optsOf = (obj, cur) => Object.entries(obj).map(([k, v]) => opt(k, typeof v === 'string' ? v : v.label, cur)).join('');
 function typeOptions(cur) {
@@ -867,6 +970,7 @@ function deviceOptions(selected) {
   return doc.racks.map(r => `<optgroup label="${esc(r.name)}">` +
     [...r.devices].sort((a, b) => b.u - a.u).map(d => opt(d.id, `${isZeroU(d) ? '0U' : 'U' + d.u} · ${d.name}`, selected)).join('') + '</optgroup>').join('');
 }
+/* the ports of a device a cable end can use (the ones other cables use are disabled) */
 function portOptions(devId, sel, cabId, kind) {
   const f = findDev(devId); if (!f) return '';
   const use = portUse()[devId] || {}, d = f.dev;
@@ -878,7 +982,9 @@ function portOptions(devId, sel, cabId, kind) {
     }
   return h || '<option value="">No ports of this kind</option>';
 }
+/* every port key of a device: p, u, i, o */
 const allPortKeys = d => ['p', 'u', 'i', 'o'].flatMap(c => Array.from({ length: portCount(d, c) }, (_, i) => c + (i + 1)));
+/* the port map: every port, its connector and what is plugged into it */
 function portTableHTML(dev) {
   const keys = allPortKeys(dev);
   if (!keys.length) return '';
@@ -894,6 +1000,7 @@ function portTableHTML(dev) {
   }).join('');
   return `<details class="ptable"><summary>Port map · ${Object.keys(used).length} of ${keys.length} in use</summary><table>${rows}</table></details>`;
 }
+/* the Properties form of a device; data-f names the field that updateDevice changes */
 function devicePropsHTML(rack, dev) {
   const u = ui.unit, z = isZeroU(dev), pm = ui.power, warn = devWarn(rack, dev);
   const src = pm.sources.find(s => s.dev.id === dev.id), feeds = pm.feeds[dev.id] || [];
@@ -962,6 +1069,7 @@ function devicePropsHTML(rack, dev) {
     ${portTableHTML(dev)}
   </div>`;
 }
+/* the Properties form of a rack; data-f names the field that updateRack changes */
 function rackPropsHTML(r) {
   const u = ui.unit, used = usedU(r), usable = r.units * U_MM, info = ui.power.racks.find(x => x.rack === r);
   return `<div class="stack">
@@ -988,6 +1096,7 @@ function rackPropsHTML(r) {
     <div class="row"><button data-act="left" title="Move left">←</button><button data-act="right" title="Move right">→</button><button data-act="dup">Duplicate</button><button data-act="del" class="danger">Delete</button></div>
   </div>`;
 }
+/* the Properties form of a cable; data-f names the field that updateCable changes */
 function cablePropsHTML(c) {
   const t = ctype(c.type), A = findDev(c.a), B = findDev(c.b), kind = portKind(c.pa);
   const len = cableLengths()[c.id] || 0, std = stdLength(len, kind), warn = cableCheck(c), room = runPairs(c).length;
@@ -1014,6 +1123,7 @@ function cablePropsHTML(c) {
     <div class="row"><button data-act="del" class="danger">Delete</button></div>
   </div>`;
 }
+/* the Properties of several selected devices; data-mf / data-mact name what updateMulti and the buttons do */
 function multiPropsHTML(ids) {
   const devs = ids.map(findDev).filter(Boolean);
   const hU = devs.reduce((s, f) => s + (isZeroU(f.dev) ? 0 : f.dev.h), 0);
@@ -1027,6 +1137,7 @@ function multiPropsHTML(ids) {
     <p class="hint">Shift-click adds or removes a device · Shift-drag on empty space selects with a box · Ctrl+C, Ctrl+V and Ctrl+D copy, paste and duplicate.</p>
   </div>`;
 }
+/* the Properties with nothing selected: units, layout and label settings; data-g names the setting */
 function globalPropsHTML() {
   const s = doc.settings;
   return `<div class="stack">
@@ -1047,6 +1158,7 @@ function globalPropsHTML() {
     <p class="hint">Stock cord lengths are suggested in metres, or in feet when units are inches.</p>
   </div>`;
 }
+/* fill the Properties panel for what is selected */
 function renderProps() {
   const s = ui.sel, multi = ui.multi.size > 1;
   $('#propsTitle').textContent = multi ? 'Selection' : { device: 'Device', rack: 'Rack', cable: 'Cable' }[s?.kind] || 'Properties';
@@ -1076,6 +1188,8 @@ propsEl.addEventListener('change', e => {
   else if (s.kind === 'rack') updateRack(s.id, f, raw);
   else if (s.kind === 'cable') updateCable(s.id, f, raw);
 });
+/* a changed field in the Properties form becomes an edit (updateCable, updateDevice, updateRack, updateMulti). Changes
+   that would not fit are refused with a message and the form is put back */
 function updateCable(id, f, raw) {
   const c = doc.cables.find(c => c.id === id);
   if (f === 'a' || f === 'b') {
@@ -1223,6 +1337,7 @@ propsEl.addEventListener('click', e => {
 const rackForm = $('#addRackForm'), presetSel = $('#presetSel'), newRackBtn = $('#newRackBtn');
 const formMM = { width: 600, depth: 1000 };
 presetSel.innerHTML = RACK_PRESETS.map((p, i) => `<option value="${i}">${p.label}</option>`).join('');
+/* the first of "Rack A", "Rack B"… that is not in use */
 function nextRackName() {
   for (let i = 0; i < 26; i++) {
     const n = 'Rack ' + String.fromCharCode(65 + i);
@@ -1230,17 +1345,20 @@ function nextRackName() {
   }
   return 'Rack ' + (doc.racks.length + 1);
 }
+/* fill the new-rack form from the chosen preset */
 function applyPreset() {
   const p = RACK_PRESETS[+presetSel.value];
   rackForm.units.value = p.units; formMM.width = p.width; formMM.depth = p.depth;
   renderRackForm();
 }
+/* show the new-rack form's sizes in the unit chosen */
 function renderRackForm() {
   rackForm.width.value = toDisp(formMM.width);
   rackForm.depth.value = toDisp(formMM.depth);
   if (!rackForm.name.dataset.touched) rackForm.name.value = nextRackName();
-  document.querySelectorAll('.unit-lbl').forEach(el => (el.textContent = ui.unit));
+  $all('.unit-lbl').forEach(el => (el.textContent = ui.unit));
 }
+/* open or close the new-rack form */
 function showRackForm(on) {
   rackForm.hidden = !on;
   newRackBtn.setAttribute('aria-expanded', on);
@@ -1270,6 +1388,7 @@ $('#cancelRack').addEventListener('click', () => showRackForm(false));
 
 /* ---------- equipment list (with saved templates) ---------- */
 const paletteEl = $('#palette');
+/* the equipment list: saved templates first, then the catalogue by category */
 function renderPalette() {
   const tpls = doc.settings.templates;
   const item = (type, label, h, cat, extra = '', style = '') =>
@@ -1308,6 +1427,7 @@ paletteEl.addEventListener('dragstart', e => {
 const CV = { U: U_MM, mm: 1, cm: 10, in: IN_MM };
 let cvMM = U_MM;
 const cvInputs = [...document.querySelectorAll('[data-cv]')];
+/* the converter's boxes show the same length in every unit, except the one being typed in */
 function renderConverter(except) {
   for (const inp of cvInputs) if (inp.dataset.cv !== except) inp.value = num(cvMM / CV[inp.dataset.cv], 4);
   drawConvRuler();
@@ -1318,6 +1438,7 @@ cvInputs.forEach(inp => inp.addEventListener('input', () => {
   cvMM = v * CV[inp.dataset.cv];
   renderConverter(inp.dataset.cv);
 }));
+/* the ruler under the converter: rack units above, the chosen unit below, a mark at the length */
 function drawConvRuler() {
   const W = 260, X = 10, range = Math.max(cvMM * 1.15, 4 * U_MM), sc = W / range, u = ui.unit;
   let s = '';
@@ -1342,6 +1463,7 @@ function drawConvRuler() {
 
 /* ---------- colors & cable types editor ---------- */
 const styleEl = $('#styleEditor'), cableTypeSel = $('#cableType');
+/* cable types (colour, name, how many cables use them) and the equipment colours */
 function renderStyleEditor() {
   const used = {};
   doc.cables.forEach(c => (used[c.type] = (used[c.type] || 0) + 1));
@@ -1394,6 +1516,7 @@ styleEl.addEventListener('click', e => {
 /* ---------- search ---------- */
 const searchIn = $('#searchIn'), searchRes = $('#searchRes');
 let searchHits = [], searchActive = 0;
+/* racks, devices and cables whose name, hostname, IP, serial, notes or label contain the text */
 function searchItems(q) {
   q = q.trim().toLowerCase();
   if (!q) return [];
@@ -1412,6 +1535,7 @@ function searchItems(q) {
   return res;
 }
 const SEARCH_MAX = 14;
+/* the result list under the search box (a combobox: the input keeps the focus) */
 function renderSearch() {
   const all = searchItems(searchIn.value);
   searchHits = all.slice(0, SEARCH_MAX);
@@ -1425,6 +1549,7 @@ function renderSearch() {
   if (searchHits.length) searchIn.setAttribute('aria-activedescendant', 'sr' + searchActive); else searchIn.removeAttribute('aria-activedescendant');
   $('#sr' + searchActive)?.scrollIntoView({ block: 'nearest' });
 }
+/* hide the result list */
 function closeSearch() {
   searchRes.hidden = true;
   searchIn.setAttribute('aria-expanded', 'false');
@@ -1497,6 +1622,7 @@ $('#redoBtn').addEventListener('click', redo);
 
 /* file menu */
 const fileBtn = $('#fileBtn'), fileMenu = $('#fileMenu');
+/* open or close the File menu */
 function showMenu(on) { fileMenu.hidden = !on; fileBtn.setAttribute('aria-expanded', on); if (on) keepInside(fileMenu); }
 fileBtn.addEventListener('click', e => { e.stopPropagation(); showMenu(fileMenu.hidden); });
 document.addEventListener('click', e => { if (!fileMenu.hidden && !e.target.closest('.menu-wrap')) showMenu(false); });
@@ -1563,6 +1689,7 @@ try {
   exampleNote.hidden = localStorage.getItem('rackviz.example') !== '1';
 } catch (e) { exampleNote.hidden = !firstVisit; }
 ui.example = !exampleNote.hidden;
+/* show or hide the "this is an example" note, and remember it */
 function setExample(on) {
   ui.example = on;
   exampleNote.hidden = !on;
@@ -1577,6 +1704,7 @@ window.addEventListener('storage', e => { if (e.key === 'rackviz.example' && !e.
 $('#exampleMenu').insertAdjacentHTML('beforeend', Object.entries(EXAMPLES).map(([id, x]) =>
   `<button role="menuitem" data-example="${id}"><svg class="ic"><use href="#i-rack"/></svg><span class="grow"><span class="ci-main">${esc(x.label)}</span><span class="ci-sub">${esc(x.hint)}</span></span></button>`).join(''));
 $('#emptyExamples').innerHTML = Object.entries(EXAMPLES).map(([id, x]) => `<button class="link" data-example="${id}">${esc(x.label)}</button>`).join('');
+/* a click on an example (File menu or empty screen); replacing a layout of your own needs a second click */
 function pickExample(e) {
   const btn = e.target.closest('[data-example]');
   if (!btn) return;
@@ -1591,6 +1719,7 @@ $('#emptyExamples').addEventListener('click', pickExample);
 const themeBtn = $('#themeBtn');
 let theme = 'auto';
 try { theme = localStorage.getItem('rackviz.theme') || 'auto'; } catch (e) { /* ignore */ }
+/* auto follows the system, light and dark are chosen */
 function applyTheme() {
   if (theme === 'auto') delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = theme;
@@ -1626,11 +1755,14 @@ for (const d of document.querySelectorAll('details.sec')) {
 }
 
 /* ================= keyboard ================= */
-document.addEventListener('keydown', e => {
+document.addEventListener('keydown', onKey);
+function onKey(e) {
+  const kd = e.target.ownerDocument || e.target;   // the window the key was pressed in (a popped-out panel has its own)
   if (document.querySelector('dialog[open], #tour:not([hidden])')) return;   // dialogs and the tour handle their own keys
   // rows that act as buttons (power, connections, selection lists) work like buttons: Enter or Space
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('[role="button"]:not(button)')) { e.preventDefault(); return e.target.click(); }
-  const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName);
+  const typing = /INPUT|SELECT|TEXTAREA/.test(kd.activeElement?.tagName);   // in a popped-out panel too
+  if (kd !== document && (e.key === '/' || e.key === '?' || (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k')) window.focus();   // these land in the main window
   const key = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;
   if (mod && key === 'k') { e.preventDefault(); return searchIn.focus(); }
   // [ and ] by key position too, so they work on layouts where those keys print something else
@@ -1656,7 +1788,7 @@ document.addEventListener('keydown', e => {
   else if (key === 'f') { if (ui.pane !== 'racks') fitNet(); if (ui.pane !== 'net') $('#fitBtn').click(); }   // side by side: both
   else if (key === 'n') setPane(ui.pane === 'split' ? 'racks' : 'split');
   else if (key === 'k') setCheck(!ui.check);
-  else if (e.key === 'Enter' && document.activeElement === document.body) openDetails();
+  else if (e.key === 'Enter' && kd.activeElement === kd.body) openDetails();
   else if (e.key === '/') { e.preventDefault(); searchIn.focus(); }
   else if (e.key === '+' || e.key === '=') { if (ui.pane === 'net') netCenterZoom(1.25); else zoomBy(1.25); }
   else if (e.key === '-' || e.key === '_') { if (ui.pane === 'net') netCenterZoom(0.8); else zoomBy(0.8); }
@@ -1665,16 +1797,19 @@ document.addEventListener('keydown', e => {
     e.preventDefault();
     shiftDevs(selectedDevIds(), e.key === 'ArrowUp' ? 1 : -1);
   }
-});
+}
 
 /* ================= render ================= */
+/* the drawings only: the 2D or 3D view and the diagram */
 function renderStage() {
   if (ui.pane !== 'net') { if (ui.view === '2d') draw2D(); else build3D(); }
   if (ui.pane !== 'racks') drawNet();
   hud();
 }
+/* redraw everything from the layout: the analysis first (power, connections), then every panel and the drawing; the
+   keyboard stays where it was */
 function renderAll() {
-  const had = document.activeElement, zone = had?.closest?.('#props, #rackList, #cableList');
+  const had = activeEl(), zone = had?.closest?.('#props, #rackList, #cableList');
   const at = zone && zone !== propsEl ? [...zone.querySelectorAll('[role="option"]')].indexOf(had) : -1;
   for (const id of [...ui.multi]) if (!findDev(id)) ui.multi.delete(id);
   if (ui.multi.size === 1) { ui.sel = { kind: 'device', id: [...ui.multi][0] }; ui.multi.clear(); }
@@ -1713,13 +1848,14 @@ function renderAll() {
   renderStage();
   // the focused control went away with what it showed (a deleted device, another selection): keep the
   // keyboard where it was working instead of dropping it at the top of the page
-  if (zone && !had.isConnected && document.activeElement === document.body) {
+  if (zone && !had.isConnected && activeEl() === document.body) {
     const opts = zone === propsEl ? [] : [...zone.querySelectorAll('[role="option"]')];
     const to = zone === propsEl ? $('#propsTitle') : opts[Math.min(Math.max(at, 0), opts.length - 1)];
     if (to && opts.length) for (const o of opts) o.tabIndex = o === to ? 0 : -1;
     to?.focus({ preventScroll: true });
   }
 }
+/* the colour key over the drawing: the cable types in use */
 function renderLegend() {
   const n = {};
   doc.cables.forEach(c => (n[c.type] = (n[c.type] || 0) + 1));

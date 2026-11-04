@@ -17,7 +17,9 @@ const NODE_W = 180, NODE_H = 60, GRID = 20;   // boxes are whole grid cells, so 
 const ROW_GAP = 80, COL_GAP = 20, COMP_GAP = 100, LOOSE_GAP = 80;
 ui.net = { layer: 'data', cam: { x: 0, y: 0, k: 1 }, fitK: 1, userMoved: false, bounds: null, lastSel: null };
 try { ui.net.layer = localStorage.getItem('rackviz.netLayer') === 'power' ? 'power' : 'data'; } catch (e) { /* ignore */ }
+/* the diagram's saved look: grid, snap and link style */
 const netSet = () => doc.settings.net;
+/* the nearest grid line */
 const snapTo = v => Math.round(v / GRID) * GRID;
 
 /* where a device sits, top to bottom, in a data network: incoming lines first, endpoints and copper panels last */
@@ -27,6 +29,8 @@ function netTier(d) {
 }
 
 /* ---------- graph ---------- */
+/* the graph of a layer: a node for every device with ports of that kind, a link for every pair of devices (in the power
+   layer one per direction), each link holding its cables */
 function netGraph(layer) {
   const power = layer === 'power', nodes = new Map(), links = new Map();
   for (const r of doc.racks) for (const d of r.devices)
@@ -56,12 +60,14 @@ function netGraph(layer) {
   }
   return { nodes, links, layer };
 }
+/* the node at the other end of link l from node n */
 const netOther = (G, n, l) => G.nodes.get(l.a === n.id ? l.b : l.a);
 /* rack order, then top to bottom: keeps the diagram close to how the racks read */
 function physOrder(n) {
   if (n.mains) return -1;
   return doc.racks.indexOf(n.rack) * 1000 + (n.rack.units - (isZeroU(n.dev) ? 0 : n.dev.u));
 }
+/* the connected groups of boxes, largest first, and the boxes with nothing connected */
 function netComponents(G) {
   const comps = [], seen = new Set();
   for (const n of [...G.nodes.values()].sort((p, q) => physOrder(p) - physOrder(q))) {
@@ -204,6 +210,8 @@ function rackArrange(G) {
   if (G.nodes.has('#mains')) pos.set('#mains', { x: Math.max(0, (doc.racks.length - 1) * colW / 2), y: 0 });
   return pos;
 }
+/* positions for every box in one of the ARRANGE styles, snapped to the grid; boxes with nothing connected go in a grid
+   below (looseY is where it starts) */
 function netArrange(G, style) {
   const { comps, loose } = netComponents(G);
   const pos = style === 'racks' ? rackArrange(G) : style === 'star' ? starArrange(G, comps) : layeredArrange(G, comps, style === 'lr');
@@ -246,6 +254,7 @@ function netPlace(G) {
   }
   return { auto: false };
 }
+/* the box around all the nodes, with a margin, for fitting the view */
 function netBounds(G) {
   const all = [...G.nodes.values()];
   if (!all.length) return { x: 0, y: 0, w: 400, h: 200 };
@@ -431,6 +440,7 @@ function netTrackOrder(group) {
 }
 
 /* ---------- drawing ---------- */
+/* one box: name, hostname and IP (the load in the power layer), place in the rack and status lights; print leaves out the selection and the lights */
 function netNodeSVG(n, G, print = false) {
   const box = (cls, inner, attrs = '') => `<g class="nn ${cls}" data-nnode="${esc(n.id)}"${attrs} transform="translate(${n.x},${n.y})">${inner}</g>`;
   if (n.mains) return box('mains', `<rect class="nn-box" width="${NODE_W}" height="${NODE_H}" rx="10"/>`
@@ -453,6 +463,7 @@ function netNodeSVG(n, G, print = false) {
     + `<text class="nn-loc" x="16" y="51">${esc(clip(loc, 29))}</text>${lights}`,
     ` data-ndev="${d.id}"${d.color ? ` style="--c:${d.color}"` : ''}`);
 }
+/* one link: its line, a count when several cables share it, and the port names at both ends once zoomed in */
 function netLinkSVG(l, g, k, print = false) {
   if (l.feed) return `<g class="nl feed"><path class="nl-line" d="${g.d}"/></g>`;
   const c0 = l.cables[0].c, t = ctype(c0.type), n = l.cables.length;
@@ -481,6 +492,7 @@ function netGridSVG() {
     + (minor ? '<rect class="net-grid-bg" width="100%" height="100%" fill="url(#netGridMinor)"/>' : '')
     + '<rect class="net-grid-bg" width="100%" height="100%" fill="url(#netGridMajor)"/>';
 }
+/* draw the diagram (links under boxes) inside the camera group */
 function renderNet() {
   const G = ui.net.G, P = ui.net.placed, k = ui.net.cam.k, geo = netLinkGeometry(G);
   let s = '<g class="nl-all">';
@@ -513,6 +525,7 @@ function netPrintSVG(layer) {
 
 /* ---------- view ---------- */
 const netVisible = () => ui.pane === 'net' || ui.pane === 'split';
+/* rebuild everything: the graph, the places of the boxes, the view, the bar and the legend */
 function drawNet() {
   if (!netVisible()) return;
   const G = netGraph(ui.net.layer);
@@ -531,6 +544,7 @@ function drawNet() {
   $('#netLegend').hidden = !used.size;
   $('#netLegend').innerHTML = [...used].map(([id, n]) => { const t = ctype(id); return `<span><i class="sw line${t.kind === 'power' ? ' thick' : ''}" style="--c:${t.color}"></i>${esc(t.name)} <span class="muted">${n}</span></span>`; }).join('');
 }
+/* the bar's buttons follow the saved settings */
 function syncNetBar() {
   const s = netSet();
   markOn('#netLayerSeg button', 'layer', ui.net.layer);
@@ -549,6 +563,7 @@ function netCamOnly() {   // pan: move the drawing and the grid, redraw only whe
   cam.setAttribute('transform', `translate(${x},${y}) scale(${k})`);
   for (const p of netSvg.querySelectorAll('pattern')) p.setAttribute('patternTransform', `translate(${x},${y}) scale(${k})`);
 }
+/* zoom and pan so the whole diagram fits between the bar and the zoom controls; draw: redraw afterwards */
 function fitNet(draw = true) {
   const r = netSvg.getBoundingClientRect(), b = ui.net.bounds;
   if (!r.width || !r.height || !b) return;
@@ -560,6 +575,7 @@ function fitNet(draw = true) {
   ui.net.fitK = k; ui.net.userMoved = false;
   if (draw) drawNet();
 }
+/* zoom about a point of the pane (mx, my in pixels) */
 function netZoomAt(mx, my, f) {
   const c = ui.net.cam, k2 = clamp(c.k * f, 0.15, 4);
   ui.net.cam = { k: k2, x: mx - (mx - c.x) * k2 / c.k, y: my - (my - c.y) * k2 / c.k };
@@ -652,6 +668,7 @@ netSvg.addEventListener('pointermove', e => {
   ui.net.cam.y = d.cy + e.clientY - d.sy;
   netCamOnly();
 });
+/* end of a press: a moved box is dropped (one undo step), a plain click selects the box or link under it */
 function netPointerEnd(e) {
   netTouch.delete(e.pointerId);
   if (netPinch) { if (netTouch.size < 2) netPinch = null; netDrag = null; return; }
@@ -689,6 +706,7 @@ function netPointerEnd(e) {
   if (d.target.closest?.('[data-nnode]')) return;   // the building feed: nothing to select
   if (ui.sel || ui.multi.size) select(null);
 }
+/* is this box a device (and not the building feed)? */
 const G_isDevice = id => !!ui.net.G?.nodes.get(id)?.dev;
 netSvg.addEventListener('pointerup', netPointerEnd);
 netSvg.addEventListener('pointercancel', netPointerEnd);
@@ -707,6 +725,7 @@ $('#netLayerSeg').addEventListener('click', e => {
   ui.net.userMoved = false;
   drawNet();
 });
+/* change one of the diagram's settings, save and redraw */
 const netSetting = (k, v) => { netSet()[k] = v; save(); drawNet(); };
 $('#netGridBtn').addEventListener('click', () => netSetting('grid', !netSet().grid));
 $('#netSnapBtn').addEventListener('click', () => netSetting('snap', !netSet().snap));
@@ -714,6 +733,7 @@ $('#netLinkSeg').addEventListener('click', e => { const b = e.target.closest('[d
 const arrangeBtn = $('#netArrangeBtn'), arrangeMenu = $('#netArrangeMenu');
 arrangeMenu.innerHTML = Object.entries(ARRANGE).map(([k, a]) => `<button role="menuitem" data-arrange="${k}"><span class="grow"><span class="ci-main">${a.label}</span><span class="ci-sub">${a.hint}</span></span></button>`).join('')
   + '<hr><button role="menuitem" data-arrange="auto"><span class="grow"><span class="ci-main">Automatic</span><span class="ci-sub">Arranges itself again as cables change; forgets moved boxes</span></span></button>';
+/* open or close the Arrange menu */
 const showArrange = on => { arrangeMenu.hidden = !on; arrangeBtn.setAttribute('aria-expanded', on); if (on) keepInside(arrangeMenu, netPane.getBoundingClientRect()); };
 arrangeBtn.addEventListener('click', e => { e.stopPropagation(); showArrange(arrangeMenu.hidden); });
 menuKeys(arrangeBtn, arrangeMenu, showArrange);
@@ -737,6 +757,7 @@ arrangeMenu.addEventListener('click', e => {
   });
   toast(`Arranged as ${ARRANGE[style].label.toLowerCase()}. Drag boxes to adjust; Undo puts it back`);
 });
+/* zoom about the middle of the pane */
 const netCenterZoom = f => { const r = netSvg.getBoundingClientRect(); netZoomAt(r.width / 2, r.height / 2, f); };
 $('#netZoomIn').addEventListener('click', () => netCenterZoom(1.25));
 $('#netZoomOut').addEventListener('click', () => netCenterZoom(0.8));
